@@ -1,0 +1,15 @@
+node_modules/
+release/
+*.log
+.DS_Store
+
+# 构建产物
+build/icon.icns
+packages/dsh-desktop/*.tgz
+
+# 本机敏感数据（任何情况下不得入库）
+.credentials.yaml
+.env
+.env.*
+vision.config.json
+usage-scan-cache.json

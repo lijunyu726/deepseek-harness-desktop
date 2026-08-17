@@ -1,0 +1,39 @@
+{
+  "name": "@deepseek-ai/dsh-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop-shell plugin: global-constraints settings category, balance/usage surface, and agent-turn desktop notifications. Host half exposes Typert remotes; browser half registers settings sections.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-reference": "0.1.0-rc.6",
+    "qrcode": "^1.5.4",
+    "yaml": "^2.9.0"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/mobile.js",
+    "package.json"
+  ],
+  "license": "MIT"
+}
