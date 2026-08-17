@@ -55,6 +55,10 @@ npm run dev          # 以开发模式启动（服务直接跑在 electron 的 n
 - 开发调试时如需与已安装实例共存，用 `DSH_USER_DATA_DIR=/tmp/dsh-uitest` 隔离开发实例的配置目录（锁、缓存、日志互不干扰）。
 - 修改 `packages/dsh-desktop/lib/` 后：`npm run pack:plugin`（打进 tarball 并刷新 node_modules 里的插件副本），然后 `npm run dist` 重新打包；每次 `dist` 也会自动跑这一步。
 
+## 旧版存档
+
+迁移前（依赖 DSH 大仓、构建链含 monorepo:prepare）的旧版代码归档在 `legacy` 分支，README 顶部已标注「旧版存档（LEGACY）」，仅作存档不再维护。
+
 ## 从新克隆构建
 
 ```bash
