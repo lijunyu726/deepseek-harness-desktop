@@ -12,7 +12,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const repoDir = path.dirname(desktopDir)
+// 迁移后本项目不再位于 DSH 大仓内：默认回退到父目录（旧布局），
+// 需要刷新本地 fork 特性时用 DSH_MONOREPO=<大仓路径> 显式指定。
+const repoDir = process.env.DSH_MONOREPO?.trim() || path.dirname(desktopDir)
 const installedScope = path.join(desktopDir, 'node_modules', '@deepseek-ai')
 
 const packages = [
@@ -36,6 +38,10 @@ for (const [sourcePackage, installedName] of packages) {
   console.log(`[monorepo-overlay] ${installedName}`)
 }
 
+if (!existsSync(path.join(repoDir, 'package.json'))) {
+  console.error(`[monorepo-overlay] 未找到 DSH 大仓（${repoDir}）。迁移后的独立仓库默认不重复构建大仓；如需刷新本地 fork 特性，请先构建大仓并用 DSH_MONOREPO=<路径> 运行本脚本。`)
+  process.exit(1)
+}
 const webSource = path.join(repoDir, 'apps', 'web', 'dist')
 const webTarget = path.join(installedScope, 'dsh-web-frontend', 'dist')
 if (!existsSync(webSource)) throw new Error(`local web build output is missing: ${webSource}`)
