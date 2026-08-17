@@ -26,7 +26,7 @@ Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测
 
 ### 历史 Prompt
 
-宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话区左侧的固定时间轴轨道：每条 Prompt 一根小杠（最新在最上），悬停弹出预览气泡，点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。桌面与手机连接同一服务，因此天然共享历史。
+宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为固定在窗口最左侧（left:10）的裸小杠时间轴（无胶囊外壳）：每条 Prompt 一根小杠（最新在最上），悬停时整列按与悬停杠的距离做鱼眼扩散缩放（当前 1.45 → 逐级递减），并在右侧弹出预览气泡，点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层（1000），打开面板时不会压在其上。桌面与手机连接同一服务，因此天然共享历史。
 
 ### 局域网可信名单自愈
 
@@ -34,11 +34,11 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 ### 鲸鱼思考强度变阻器
 
-接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：一个滑块串联两个 DeepSeek 模型共六档，客户端用显式状态表固定为 Flash·Off→High→Max→V4 Pro·Off→High→Max，不依赖模型接口的返回顺序。选中即走 `session.selectModel` 官方通道（会话级状态，桌面/手机同流实时同步）。
+接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：收起态渲染一个与 shell 默认模型芯片像素一致的触发器（只显示模型 + 档位 + 箭头，视觉上像没改过），点击后展开鲸鱼变阻器弹出层（锚定芯片右上方，点击外部或 Esc 收起）。一个滑块串联两个 DeepSeek 模型共六档，客户端用显式状态表固定为 Flash·Off→High→Max→V4 Pro·Off→High→Max，不依赖模型接口的返回顺序。选中即走 `session.selectModel` 官方通道（会话级状态，桌面/手机同流实时同步）。
 
 每档拥有独立的透明底 24 帧动画，运行时素材为 `lib/whale-sprites/*.webp` 下的 1056×512 无损 WebP（6×4 网格，单格 176×128）。宿主 `lib/whale-sprites.js` 在 `/dsh-desktop/whale-sprites/<state>.webp` 注册六个精确同源路由，浏览器端预加载后以 CSS `background-position` 播放；切档通过 React key 重启动画，系统开启“减少动态效果”时停在首帧。Flash 三档保持轻快，Pro 三档的动作语义更强，避免 Flash·Max 比 Pro 更努力。
 
-视觉层：鲸鱼整体 `scaleX(-1)` 翻转，使朝向（右）与档位递增方向一致；鲸鱼宽 32px，位置与填充宽度都以 `THUMB=16` 为基准，满档时填充恰好 100%、鲸鱼右缘与轨道平齐不被裁切。填充用蓝系渐变（hue 212→235，不含紫色），内含流光扫过层与随档位增多的星尘粒子（2→8 颗，伪随机种子按档位稳定）；轨道上按档位等距渲染 6 个圆点刻度（已过档位点亮）。轨道高度用 `!important` 加固，避免第三方注入的全局样式压扁布局。
+视觉层：鲸鱼整体 `scaleX(-1)` 翻转，使朝向（右）与档位递增方向一致；鲸鱼 40×30 浮在轨道上方（`dsh-rheo-sea` 固定高度容器，轨道绝对定位贴底，避免外边距折叠），位置与填充宽度都以 `THUMB=20` 为基准，满档时填充恰好 100%。填充用蓝系渐变（hue 212→235，不含紫色），内含流光扫过层与随档位增多的星尘粒子（2→8 颗，伪随机种子按档位稳定）；轨道上按档位等距渲染 6 个圆点刻度（已过档位点亮，鲸鱼在上方不遮挡）。轨道高度用 `!important` 加固，避免第三方注入的全局样式压扁布局。
 
 ### @会话提及
 
