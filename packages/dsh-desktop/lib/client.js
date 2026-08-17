@@ -7,7 +7,8 @@
  *   - 应用 (notifications / launch-at-login / proxy / storage / updates)
  *   - 归档管理 (archived session list + unarchive)
  *   - 扩展 (MCP servers + Skills: lists, templates, creation flows)
- *   - Session header balance chip
+ *   - Session header balance chip (Session log-styled)
+ *   - Prompt-history timeline rail (side ticks + hover preview popover)
  * Served by the host client-module system at
  * /plugins/@deepseek-ai/dsh-desktop/client.js.
  */
@@ -364,18 +365,20 @@ window.__ModuleLoader__.load({
     }
 
     // — 会话页头部余额芯片 -----------------------------------------------------
-    // Same footprint as the shell's "Session log" header button (32px pill,
-    // 13px text) so the balance reads as a peer control — with a brand-tinted
-    // border and a bold value so the number stands out.
+    // Identical visual recipe to the shell's "Session log" header button
+    // (32px pill, 13px text, transparent fill, hairline white border) so the
+    // balance reads as a peer control rather than a highlighted badge.
     const CHIP = {
       display: 'inline-flex', alignItems: 'center', gap: '7px',
-      height: '32px', fontSize: '13px', lineHeight: '20px',
+      height: '32px', boxSizing: 'border-box',
+      fontSize: '13px', lineHeight: '20px',
       userSelect: 'text', cursor: 'pointer',
       padding: '6px 12px', borderRadius: '18px',
-      border: '1px solid rgba(103,158,254,0.42)',
-      background: 'rgba(103,158,254,0.07)',
+      border: '1px solid rgba(255,255,255,0.12)',
+      background: 'transparent',
+      color: 'var(--dsw-alias-label-primary, #F9FAFB)',
     }
-    const CHIP_VALUE = { fontWeight: 600, color: 'var(--dsw-alias-label-primary, #F9FAFB)' }
+    const CHIP_VALUE = { fontWeight: 400, color: 'var(--dsw-alias-label-primary, #F9FAFB)' }
     const CHIP_REFRESH = {
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
       width: '22px', height: '22px', marginRight: '-6px',
@@ -483,10 +486,16 @@ window.__ModuleLoader__.load({
       const [error, setError] = react.useState('')
       const [loading, setLoading] = react.useState(true)
       const [expanded, setExpanded] = react.useState(true)
+      const usagePollRef = react.useRef(null)
+      const usageRequestInFlightRef = react.useRef(false)
+      const mountedRef = react.useRef(true)
 
-      const refresh = () => {
-        setLoading(true)
-        gateway.usage().then((r) => {
+      const requestUsage = react.useCallback((force = false, foreground = false) => {
+        if (usageRequestInFlightRef.current) return
+        usageRequestInFlightRef.current = true
+        if (foreground) setLoading(true)
+        gateway.usage(force).then((r) => {
+          if (!mountedRef.current) return
           if (r && r.ok) {
             setUsage(r)
             setError('')
@@ -494,24 +503,50 @@ window.__ModuleLoader__.load({
             setError((r && r.error) || '读取失败')
           }
           setLoading(false)
+          if (r && r.ok && r.refreshing) {
+            if (usagePollRef.current !== null) clearTimeout(usagePollRef.current)
+            usagePollRef.current = setTimeout(() => requestUsage(false, false), 800)
+          }
+        }).catch(() => {
+          if (!mountedRef.current) return
+          setError('读取失败')
+          setLoading(false)
+        }).finally(() => {
+          usageRequestInFlightRef.current = false
         })
+      }, [gateway])
+
+      const requestBalance = react.useCallback(() => {
         gateway.balance().then((r) => {
-          if (r && r.ok && Array.isArray(r.infos)) setBalance(r.infos)
-        })
+          if (mountedRef.current && r && r.ok && Array.isArray(r.infos)) setBalance(r.infos)
+        }).catch(() => {})
+      }, [gateway])
+
+      const refresh = () => {
+        requestUsage(true, usage === null)
+        requestBalance()
       }
       react.useEffect(() => {
-        refresh()
-        const timer = setInterval(refresh, 60_000)
-        const onFocus = () => refresh()
-        const onTaskDone = () => refresh()
+        mountedRef.current = true
+        requestUsage(false, true)
+        requestBalance()
+        const backgroundRefresh = () => {
+          requestUsage(true, false)
+          requestBalance()
+        }
+        const timer = setInterval(backgroundRefresh, 60_000)
+        const onFocus = () => backgroundRefresh()
+        const onTaskDone = () => backgroundRefresh()
         window.addEventListener('focus', onFocus)
         window.addEventListener('dsh-desktop:agent-idle', onTaskDone)
         return () => {
+          mountedRef.current = false
           clearInterval(timer)
+          if (usagePollRef.current !== null) clearTimeout(usagePollRef.current)
           window.removeEventListener('focus', onFocus)
           window.removeEventListener('dsh-desktop:agent-idle', onTaskDone)
         }
-      }, [gateway])
+      }, [requestBalance, requestUsage])
 
       const totals = usage && usage.totals ? usage.totals : null
       const sessions = usage && Array.isArray(usage.sessions) ? usage.sessions : []
@@ -540,8 +575,12 @@ window.__ModuleLoader__.load({
         react.createElement(
           'div',
           { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          react.createElement('span', { style: { fontSize: '12px', opacity: 0.7 } }, '近期会话 token 用量（本地会话投影缓存）'),
-          react.createElement('button', { style: REFRESH_BTN, onClick: refresh }, loading ? '…' : '↻ 刷新'),
+          react.createElement(
+            'span',
+            { style: { fontSize: '12px', opacity: 0.7 } },
+            usage?.refreshing ? '近期会话 token 用量（已显示缓存，后台更新中…）' : '近期会话 token 用量（本地缓存）',
+          ),
+          react.createElement('button', { style: REFRESH_BTN, onClick: refresh }, loading ? '…' : usage?.refreshing ? '↻ 更新中' : '↻ 刷新'),
         ),
         error && react.createElement('div', { style: { color: ERR, fontSize: 12 } }, error),
         react.createElement(
@@ -1315,6 +1354,154 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // — 历史 Prompt -----------------------------------------------------------
+    // Accepted user prompts are recorded by the host at agent/pre-step. This
+    // button reads that shared history and restores entries through the
+    // conversation input machine's public setDraft action, so desktop and
+    // mobile use the same data and preserve input-machine invariants.
+
+    const PROMPT_HISTORY_CSS = [
+      '.dsh-prompt-rail { position: fixed; z-index: 1100; display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 10px 8px; border-radius: 999px; background: rgba(22,25,33,0.55); border: 1px solid rgba(128,140,160,0.22); backdrop-filter: blur(10px); max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
+      '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
+      '.dsh-prompt-rail-tick { display: block; width: 18px; height: 3px; border-radius: 999px; background: rgba(190,200,220,0.35); cursor: pointer; transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease; }',
+      '.dsh-prompt-rail-tick:hover { transform: scaleX(1.9); background: rgba(255,255,255,0.95); box-shadow: 0 0 8px rgba(120,160,255,0.9); }',
+      '.dsh-prompt-rail-pop { position: fixed; z-index: 1101; width: min(340px, calc(100vw - 90px)); max-height: 260px; display: flex; flex-direction: column; border: 1px solid rgba(128,140,160,0.34); border-radius: 10px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 36px rgba(0,0,0,0.5); backdrop-filter: blur(16px); animation: dsh-prompt-rail-pop-in 0.14s ease-out; }',
+      '.dsh-prompt-rail-pop::before { content: ""; position: absolute; left: -6px; top: 16px; width: 12px; height: 12px; background: rgba(18,21,30,0.97); border-left: 1px solid rgba(128,140,160,0.34); border-bottom: 1px solid rgba(128,140,160,0.34); transform: rotate(45deg); }',
+      '@keyframes dsh-prompt-rail-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }',
+      '.dsh-prompt-rail-pop-head { display: flex; justify-content: space-between; gap: 10px; padding: 9px 12px 7px; border-bottom: 1px solid rgba(128,140,160,0.16); font-size: 10.5px; color: rgba(220,225,238,0.6); }',
+      '.dsh-prompt-rail-pop-text { overflow: auto; padding: 9px 12px 11px; font-size: 12px; line-height: 1.55; color: rgba(243,245,250,0.94); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }',
+      '@media (max-width:700px) { .dsh-prompt-rail { gap: 6px; padding: 6px 6px; } .dsh-prompt-rail-tick { width: 14px; height: 2.5px; } }',
+    ].join('\n')
+
+    let promptHistoryStyleInstalled = false
+    function installPromptHistoryStyle() {
+      if (promptHistoryStyleInstalled) return
+      promptHistoryStyleInstalled = true
+      if (document.getElementById('dsh-prompt-history-css') !== null) return
+      const style = document.createElement('style')
+      style.id = 'dsh-prompt-history-css'
+      style.textContent = PROMPT_HISTORY_CSS
+      document.head.appendChild(style)
+    }
+
+    function focusComposerAtEnd() {
+      requestAnimationFrame(() => {
+        const textarea = document.querySelector('[data-composer-card] textarea')
+        if (!(textarea instanceof HTMLTextAreaElement)) return
+        textarea.focus({ preventScroll: true })
+        const end = textarea.value.length
+        textarea.setSelectionRange(end, end)
+      })
+    }
+
+    function PromptHistoryRail({ useInput, inputActions, gateway }) {
+      const input = typeof useInput === 'function' ? useInput((state) => state) : null
+      const [items, setItems] = react.useState([])
+      const [hovered, setHovered] = react.useState(null)
+      const [popAnchor, setPopAnchor] = react.useState(null)
+      const [railLeft, setRailLeft] = react.useState(null)
+      const itemsRef = react.useRef(items)
+      const inputRef = react.useRef(input)
+      itemsRef.current = items
+      inputRef.current = input
+
+      react.useEffect(() => {
+        installPromptHistoryStyle()
+      }, [])
+
+      const load = react.useCallback(() => gateway.promptHistory(100).then((result) => {
+        const next = result && result.ok && Array.isArray(result.items) ? result.items : []
+        setItems(next)
+        itemsRef.current = next
+        return next
+      }).catch(() => []), [gateway])
+
+      react.useEffect(() => {
+        load()
+        const onTaskDone = () => load()
+        window.addEventListener('dsh-desktop:agent-idle', onTaskDone)
+        return () => window.removeEventListener('dsh-desktop:agent-idle', onTaskDone)
+      }, [load])
+
+      // Pin the rail to the conversation pane's left gutter (Codex-style
+      // timeline rail); re-measure when the layout moves or resizes.
+      react.useEffect(() => {
+        const place = () => {
+          const composer = document.querySelector('[data-composer-card]')
+          if (!(composer instanceof HTMLElement)) return
+          const rect = composer.getBoundingClientRect()
+          if (rect.width > 0) setRailLeft(Math.max(8, rect.left - 28))
+        }
+        place()
+        window.addEventListener('resize', place)
+        const observer = new ResizeObserver(() => place())
+        observer.observe(document.body)
+        return () => {
+          window.removeEventListener('resize', place)
+          observer.disconnect()
+        }
+      }, [])
+
+      const applyEntry = react.useCallback((index) => {
+        if (inputRef.current?.phase !== 'plain') return
+        const entry = itemsRef.current[index]
+        if (entry === undefined) return
+        inputActions.setDraft(entry.text)
+        focusComposerAtEnd()
+        setHovered(null)
+        setPopAnchor(null)
+      }, [inputActions])
+
+      if (items.length === 0 || railLeft === null) return null
+      const railStyle = {
+        left: railLeft,
+        top: '50%',
+        transform: 'translateY(-50%)',
+      }
+      const popStyle = popAnchor === null ? null : {
+        left: Math.min(railLeft + 46, window.innerWidth - 356),
+        top: Math.min(Math.max(popAnchor.top - 26, 70), Math.max(70, window.innerHeight - 300)),
+      }
+      const entry = hovered !== null ? items[hovered] : null
+      return react.createElement(
+        react.Fragment,
+        null,
+        react.createElement(
+          'div',
+          {
+            className: 'dsh-prompt-rail',
+            style: railStyle,
+            role: 'listbox',
+            'aria-label': '历史 Prompt 时间轴',
+            title: '历史 Prompt：悬停预览 · 点击填入输入框',
+          },
+          items.map((item, index) => react.createElement('span', {
+            key: index,
+            className: 'dsh-prompt-rail-tick',
+            role: 'option',
+            'aria-selected': index === hovered,
+            onMouseEnter: (event) => {
+              const rect = event.currentTarget.getBoundingClientRect()
+              setPopAnchor({ top: rect.top + rect.height / 2 })
+              setHovered(index)
+            },
+            onClick: () => applyEntry(index),
+          })),
+        ),
+        hovered !== null && entry !== undefined && popStyle !== null && react.createElement(
+          'div',
+          { className: 'dsh-prompt-rail-pop', style: popStyle, role: 'tooltip' },
+          react.createElement(
+            'div',
+            { className: 'dsh-prompt-rail-pop-head' },
+            react.createElement('span', null, `历史 Prompt · ${hovered + 1}/${items.length}`),
+            react.createElement('span', null, entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN') : ''),
+          ),
+          react.createElement('div', { className: 'dsh-prompt-rail-pop-text' }, entry.text),
+        ),
+      )
+    }
+
     // — @会话 mention source (Codex-style cross-session references) -----------
     // Browser-side encoder for the canonical mention URI: `dsh-session:` +
     // base64url(JSON-stringified session id) — must match the host decoder in
@@ -1329,13 +1516,24 @@ window.__ModuleLoader__.load({
 
     const RHEOSTAT_CSS = [
       '.dsh-rheostat { display: inline-flex; align-items: center; width: clamp(150px, 32vw, 250px); padding: 3px 0; }',
-      '.dsh-rheostat-track { position: relative; width: 100%; height: 36px; border-radius: 999px; background: rgba(128,140,160,0.14); border: 1px solid rgba(128,140,160,0.28); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; }',
+      '.dsh-rheostat-track { position: relative; width: 100%; height: 28px !important; min-height: 28px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
+      '.dsh-rheostat-track:hover { border-color: rgba(130,162,255,0.5); box-shadow: 0 0 0 3px rgba(77,107,254,0.09); }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
-      '.dsh-rheostat-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; transition: width 0.22s ease, background 0.3s ease; }',
-      '.dsh-rheostat-label { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 11px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.96); text-shadow: 0 1px 3px rgba(10,20,40,0.58); pointer-events: none; z-index: 2; }',
-      '.dsh-rheostat-whale { position: absolute; top: 50%; left: 24px; transform: translate(-50%, -50%); width: 66px; height: 48px; z-index: 3; pointer-events: none; transition: left 0.22s ease; filter: drop-shadow(0 2px 4px rgba(8,16,32,0.42)); animation: dsh-whale-state-in 0.16s ease-out both; }',
+      '.dsh-rheostat-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; overflow: hidden !important; transition: width 0.22s ease, background 0.3s ease; }',
+      '.dsh-rheostat-shine { position: absolute; inset: 0; background: linear-gradient(115deg, transparent 38%, rgba(255,255,255,0.28) 50%, transparent 62%); background-size: 240% 100%; animation: dsh-rheostat-shine 3.6s ease-in-out infinite; }',
+      '@keyframes dsh-rheostat-shine { 0% { background-position: 130% 0; } 55%, 100% { background-position: -70% 0; } }',
+      '.dsh-rheostat-particle { position: absolute; bottom: 3px; border-radius: 50%; background: rgba(255,255,255,0.92); box-shadow: 0 0 6px rgba(140,180,255,0.9); opacity: 0; pointer-events: none; animation: dsh-particle-rise 2.2s linear infinite; }',
+      '@keyframes dsh-particle-rise { 0% { transform: translateY(0) scale(1); opacity: 0; } 12% { opacity: 0.95; } 80% { opacity: 0.45; } 100% { transform: translateY(-16px) scale(0.35); opacity: 0; } }',
+      '.dsh-rheostat-dots { position: absolute; inset: 0; z-index: 2; pointer-events: none; }',
+      '.dsh-rheostat-dot { position: absolute; top: 50%; width: 5px; height: 5px; margin-left: -2.5px; transform: translateY(-50%); border-radius: 50%; background: rgba(255,255,255,0.26); transition: background 0.25s ease, box-shadow 0.25s ease; }',
+      '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
+      '.dsh-rheostat-label { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 10.5px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.97); background: rgba(12,16,26,0.62); border: 1px solid rgba(255,255,255,0.09); padding: 3px 7px; border-radius: 999px; pointer-events: none; z-index: 4; }',
+      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 32px !important; height: 24px !important; z-index: 3; pointer-events: none; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 6px rgba(122,172,255,0.4)); }',
+      '.dsh-rheostat-whale-inner { position: absolute; inset: 0; animation: dsh-whale-state-in 0.18s ease-out both; }',
+      '.dsh-rheostat-whale-bob { position: absolute; inset: 0; animation: dsh-whale-bob var(--sprite-duration, 2.4s) ease-in-out infinite; }',
       '.dsh-rheostat-whale-frame { position: absolute; inset: 0; display: block; background-repeat: no-repeat; background-size: 600% 400%; background-position: 0% 0%; animation: dsh-whale-sprite var(--sprite-duration, 2.4s) step-end infinite; }',
-      '@keyframes dsh-whale-state-in { from { opacity: 0.28; transform: translate(-50%, -50%) scale(0.94); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }',
+      '@keyframes dsh-whale-state-in { from { opacity: 0.25; transform: scale(0.82); } to { opacity: 1; transform: scale(1); } }',
+      '@keyframes dsh-whale-bob { 0%, 100% { transform: translateY(-1.5px); } 50% { transform: translateY(1.5px); } }',
       '@keyframes dsh-whale-sprite {',
       '  0% { background-position: 0% 0%; }',
       '  4.1667% { background-position: 20% 0%; }',
@@ -1363,7 +1561,7 @@ window.__ModuleLoader__.load({
       '  95.8333% { background-position: 100% 100%; }',
       '  100% { background-position: 0% 0%; }',
       '}',
-      '@media (prefers-reduced-motion: reduce) { .dsh-rheostat-whale, .dsh-rheostat-fill { transition: none; animation: none; } .dsh-rheostat-whale-frame { animation: none; background-position: 0% 0%; } }',
+      '@media (prefers-reduced-motion: reduce) { .dsh-rheostat-whale, .dsh-rheostat-fill, .dsh-rheostat-shine, .dsh-rheostat-particle { transition: none; animation: none; } .dsh-rheostat-whale-frame, .dsh-rheostat-whale-bob, .dsh-rheostat-whale-inner { animation: none; } .dsh-rheostat-whale-frame { background-position: 0% 0%; } }',
     ].join('\n')
 
     let rheostatStyleInstalled = false
@@ -1461,6 +1659,25 @@ window.__ModuleLoader__.load({
         return idx === -1 ? 0 : idx
       }, [stops, current, groups])
 
+      // Star-dust particles: more of them at higher levels (2 → 8), each
+      // with a stable pseudo-random position so re-renders don't jitter.
+      const particles = react.useMemo(() => {
+        if (stops.length === 0) return []
+        const level = stops.length > 1 ? stopIndex / (stops.length - 1) : 0
+        const count = 2 + Math.round(level * 6)
+        let seed = (stopIndex + 1) * 2654435761 % 4294967296
+        const rand = () => {
+          seed = (seed * 1103515245 + 12345) % 2147483648
+          return seed / 2147483648
+        }
+        return Array.from({ length: count }, () => ({
+          left: 6 + rand() * 86,
+          size: 2 + rand() * 1.8,
+          delay: rand() * 2.2,
+          duration: 1.7 + rand() * 1.1,
+        }))
+      }, [stopIndex, stops.length])
+
       const select = react.useCallback((idx) => {
         const stop = stops[idx]
         if (stop === undefined || busy || stops.length === 0) return
@@ -1500,21 +1717,27 @@ window.__ModuleLoader__.load({
       const onPointerUp = () => setDragging(false)
 
       if (stops.length === 0) return null
-      const level = stops.length > 1 ? stopIndex / (stops.length - 1) : 0
       const idx = stopIndex
-      const ratio = level
-      const hue = 205 + level * 72
+      const level = stops.length > 1 ? stopIndex / (stops.length - 1) : 0
       const stop = stops[idx]
       const shortName = `${stop.modelLabel} · ${stop.effortName}`
       const title = `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击或拖动调整）`
+      const THUMB = 16 // half of the whale width, keeps the swimmer inside the track
       const fillStyle = {
-        width: `calc(24px + (100% - 48px) * ${ratio})`,
-        background: `linear-gradient(90deg, hsl(${hue}, 85%, 58%), hsl(${Math.min(hue + 24, 288)}, 88%, 62%))`,
+        width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
+        background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
       }
       const whaleStyle = {
-        left: `calc(24px + (100% - 48px) * ${ratio})`,
+        left: `calc(${THUMB}px + (100% - ${THUMB * 2}px) * ${level})`,
         '--sprite-duration': `${stop.duration}s`,
       }
+      // Level ticks: every stop keeps a visible dot (past = lit, future =
+      // dim), so the whole range stays readable even at max.
+      const dots = stops.map((_, index) => react.createElement('span', {
+        key: index,
+        className: `dsh-rheostat-dot${index < idx ? ' past' : ''}`,
+        style: { left: `calc(${THUMB}px + (100% - ${THUMB * 2}px) * ${index / Math.max(1, stops.length - 1)})` },
+      }))
       return react.createElement(
         'div',
         { className: 'dsh-rheostat', title },
@@ -1523,12 +1746,30 @@ window.__ModuleLoader__.load({
           {
             ref: trackRef,
             className: locked ? 'dsh-rheostat-track dsh-rheostat-locked' : 'dsh-rheostat-track',
+            style: { height: 28, minHeight: 28 },
             onPointerDown,
             onPointerMove,
             onPointerUp,
             onPointerCancel: onPointerUp,
           },
-          react.createElement('div', { className: 'dsh-rheostat-fill', style: fillStyle }),
+          react.createElement(
+            'div',
+            { className: 'dsh-rheostat-fill', style: fillStyle },
+            react.createElement('span', { className: 'dsh-rheostat-shine', 'aria-hidden': true }),
+            particles.map((particle, index) => react.createElement('span', {
+              key: index,
+              className: 'dsh-rheostat-particle',
+              'aria-hidden': true,
+              style: {
+                left: `${particle.left}%`,
+                width: particle.size,
+                height: particle.size,
+                animationDelay: `${particle.delay}s`,
+                animationDuration: `${particle.duration}s`,
+              },
+            })),
+          ),
+          react.createElement('span', { className: 'dsh-rheostat-dots', 'aria-hidden': true }, dots),
           react.createElement('span', { className: 'dsh-rheostat-label' }, shortName),
           react.createElement(
             'span',
@@ -1537,11 +1778,15 @@ window.__ModuleLoader__.load({
               className: 'dsh-rheostat-whale',
               style: whaleStyle,
             },
-            react.createElement('span', {
-              className: 'dsh-rheostat-whale-frame',
-              'aria-hidden': 'true',
-              style: { backgroundImage: `url("${whaleSpriteUrl(stop.sprite)}")` },
-            }),
+            react.createElement('span', { className: 'dsh-rheostat-whale-inner' },
+              react.createElement('span', { className: 'dsh-rheostat-whale-bob' },
+                react.createElement('span', {
+                  className: 'dsh-rheostat-whale-frame',
+                  'aria-hidden': 'true',
+                  style: { backgroundImage: `url("${whaleSpriteUrl(stop.sprite)}")` },
+                }),
+              ),
+            ),
           ),
         ),
       )
@@ -1775,7 +2020,8 @@ window.__ModuleLoader__.load({
         load: () => connection.rpc.call('/api', 'globalInstructions/load', { args: {} }).then(unwrap),
         save: (text) => connection.rpc.call('/api', 'globalInstructions/save', { args: { text } }).then(unwrap),
         balance: () => connection.rpc.call('/api', 'globalInstructions/balance', { args: {} }).then(unwrap),
-        usage: () => connection.rpc.call('/api', 'globalInstructions/usage', { args: {} }).then(unwrap),
+        usage: (refresh = false) => connection.rpc.call('/api', 'globalInstructions/usage', { args: { refresh } }).then(unwrap),
+        promptHistory: (limit = 50) => connection.rpc.call('/api', 'globalInstructions/promptHistory', { args: { limit } }).then(unwrap),
         desktopConfig: () => connection.rpc.call('/api', 'globalInstructions/desktopConfig', { args: {} }).then(unwrap),
         saveDesktopConfig: (patch) => connection.rpc.call('/api', 'globalInstructions/saveDesktopConfig', { args: { patch } }).then(unwrap),
         desktopAction: (action, path) => connection.rpc.call('/api', 'globalInstructions/desktopAction', { args: { action, path } }).then(unwrap),
@@ -1957,6 +2203,21 @@ window.__ModuleLoader__.load({
             inject: () => ({ gateway }),
           },
           BalanceChip,
+        ),
+      )
+      // 历史 Prompt 时间轴：一条 prompt 一根小杠，悬停预览、点击填入。
+      // Rendered as a fixed rail pinned to the conversation pane's left gutter
+      // (Codex-style); the header slot is only the in-session anchor that
+      // provides useInput/inputActions.
+      ctx.slots.inject('conversation.session.header.utilities', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.session.header.utilities',
+            id: 'prompt-history',
+            order: 90,
+            inject: () => ({ gateway }),
+          },
+          PromptHistoryRail,
         ),
       )
       ctx.slots.inject('conversation.composer.dock', () =>

@@ -14,7 +14,7 @@ Electron 主进程用 Electron 自带的 Node 运行时（`ELECTRON_RUN_AS_NODE=
 
 ### 设置分类（`settings.section`）
 
-- **用量**：总量来自投影缓存；按日用量由独立扫描子进程产出（见下）；余额走 DeepSeek `user/balance`。
+- **用量**：总量来自投影缓存；按日用量先从持久扫描缓存同步返回，独立扫描子进程在后台增量更新，客户端以 800ms 静默轮询收敛到新 revision（见下）；余额走 DeepSeek `user/balance`。
 - **全局约束规则**：直接读写 `$DSH_HOME/AGENTS.md`。
 - **归档管理 / 扩展**：会话归档取消、MCP 服务器与 Skills 的列表/开关/删除（读写 profile 补丁与 SKILL.md frontmatter）。
 - **看图工具**：vision MCP 的模型名/调用地址/API Key 写入服务脚本旁的 `vision.config.json`（每次调用实时读取）；首次保存会把旧硬编码脚本替换为随应用打包的 `assets/vision-server.mjs` 模板并重启该 MCP 行。
@@ -22,7 +22,11 @@ Electron 主进程用 Electron 自带的 Node 运行时（`ELECTRON_RUN_AS_NODE=
 
 ### 按日用量扫描（隔离子进程）
 
-Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测复现）会随机 SIGTRAP，因此**一切解压都在 `assets/usage-scan.mjs` 子进程**：扫描器按帧边界拆分日志（会话日志是只追加的 zstd 帧流）、逐帧流式解码 `assistant/message` 用量并按本地日期聚合。主机端只做：readdir+stat 找出变更文件、按 mtime/size/frameEnd 缓存（持久化于 `$DSH_HOME/desktop/usage-scan-cache.json`）、以 `--jobs` 下发增量任务、合并结果。子进程崩溃只丢一次刷新。
+Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测复现）会随机 SIGTRAP，因此**一切解压都在 `assets/usage-scan.mjs` 子进程**：扫描器按帧边界拆分日志（会话日志是只追加的 zstd 帧流）、逐帧流式解码 `assistant/message` 用量并按本地日期聚合。主机端 RPC 先同步聚合 `$DSH_HOME/desktop/usage-scan-cache.json` 并立即返回，再以单飞任务执行 readdir+stat、按 mtime/size/frameEnd 找出增量、通过 `--jobs` 下发扫描并合并结果；15 秒新鲜度窗口避免完成轮询再次触发扫描。子进程崩溃只丢一次后台刷新。
+
+### 历史 Prompt
+
+宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话区左侧的固定时间轴轨道：每条 Prompt 一根小杠（最新在最上），悬停弹出预览气泡，点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。桌面与手机连接同一服务，因此天然共享历史。
 
 ### 局域网可信名单自愈
 
@@ -33,6 +37,8 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：一个滑块串联两个 DeepSeek 模型共六档，客户端用显式状态表固定为 Flash·Off→High→Max→V4 Pro·Off→High→Max，不依赖模型接口的返回顺序。选中即走 `session.selectModel` 官方通道（会话级状态，桌面/手机同流实时同步）。
 
 每档拥有独立的透明底 24 帧动画，运行时素材为 `lib/whale-sprites/*.webp` 下的 1056×512 无损 WebP（6×4 网格，单格 176×128）。宿主 `lib/whale-sprites.js` 在 `/dsh-desktop/whale-sprites/<state>.webp` 注册六个精确同源路由，浏览器端预加载后以 CSS `background-position` 播放；切档通过 React key 重启动画，系统开启“减少动态效果”时停在首帧。Flash 三档保持轻快，Pro 三档的动作语义更强，避免 Flash·Max 比 Pro 更努力。
+
+视觉层：鲸鱼整体 `scaleX(-1)` 翻转，使朝向（右）与档位递增方向一致；鲸鱼宽 32px，位置与填充宽度都以 `THUMB=16` 为基准，满档时填充恰好 100%、鲸鱼右缘与轨道平齐不被裁切。填充用蓝系渐变（hue 212→235，不含紫色），内含流光扫过层与随档位增多的星尘粒子（2→8 颗，伪随机种子按档位稳定）；轨道上按档位等距渲染 6 个圆点刻度（已过档位点亮）。轨道高度用 `!important` 加固，避免第三方注入的全局样式压扁布局。
 
 ### @会话提及
 
@@ -45,6 +51,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 ## 数据与凭据流
 
 - DeepSeek 凭据只由 dsh 自身的模型配置持有；插件只调用 `user/balance` 查询余额。
+- 历史 Prompt 属于本机用户数据，只写入 `$DSH_HOME/desktop/prompt-history.json`，不进入仓库、构建产物或日志；单条上限 64 KiB。
 - vision MCP 的 API Key 只存本机（`vision.config.json`，权限 600，接口不回传浏览器）；缺省回退到环境变量 / `$DSH_HOME/.credentials.yaml`。
 - 图片字节存于 `$DSH_HOME/attachments/v1/objects/<prefix>/<sha256>`；只有 agent 调用看图工具时才离开本机。
 

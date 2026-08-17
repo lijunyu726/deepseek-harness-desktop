@@ -133,7 +133,7 @@
 <div id="stage">
   <div class="grid"></div>
   <div class="glow"></div>
-  <div class="corner">dsh web · v0.1.0-rc.6</div>
+  <div id="appVersion" class="corner">DeepSeek Harness</div>
   <main>
     <div class="logo">
       <svg viewBox="0 0 50 50" xmlns="http://www.w3.org/2000/svg" fill="#E7EAF3">
@@ -156,8 +156,12 @@
   var statusEl = document.getElementById('statusText')
   var spinnerEl = document.getElementById('spinner')
   var stageEl = document.getElementById('stage')
+  var versionEl = document.getElementById('appVersion')
   var exiting = false
   var failed = false
+
+  var appVersion = new URLSearchParams(window.location.search).get('version')
+  if (appVersion) versionEl.textContent = 'DeepSeek Harness · v' + appVersion
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms) }) }
 

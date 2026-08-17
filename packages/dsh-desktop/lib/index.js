@@ -9,7 +9,7 @@
  * typert-generated artifacts required).
  */
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { homedir, networkInterfaces } from 'node:os'
@@ -27,10 +27,66 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
 
 /** Prefix marker of the canonical session-mention URI (see dsh-session-reference). */
 const SESSION_URI_PREFIX = 'dsh-session:'
+const DESKTOP_VISION_BRIDGE_TEXT = '[The user attached '
 
 export const name = 'desktop'
 
 const MAX_CONTENT_BYTES = 256 * 1024
+const PROMPT_HISTORY_LIMIT = 100
+const MAX_PROMPT_BYTES = 64 * 1024
+
+/** Prompt history is private user data, shared by desktop and mobile clients. */
+function promptHistoryPath() {
+  const home = process.env.DSH_HOME?.trim() || path.join(homedir(), '.dsh')
+  return path.join(home, 'desktop', 'prompt-history.json')
+}
+
+/** Read and validate the bounded, newest-first prompt history file. */
+function readPromptHistory() {
+  try {
+    const parsed = JSON.parse(readFileSync(promptHistoryPath(), 'utf8'))
+    if (!Array.isArray(parsed?.items)) return []
+    return parsed.items
+      .filter((item) => item !== null && typeof item === 'object' && typeof item.text === 'string')
+      .map((item) => ({
+        text: item.text,
+        createdAt: Number(item.createdAt) || 0,
+      }))
+      .filter((item) => item.text.trim().length > 0)
+      .slice(0, PROMPT_HISTORY_LIMIT)
+  } catch {
+    return []
+  }
+}
+
+/** Atomically persist one accepted user prompt, deduplicated newest-first. */
+function rememberPrompt(text) {
+  if (typeof text !== 'string') return
+  const normalized = text.trim()
+  if (normalized.length === 0 || Buffer.byteLength(normalized, 'utf8') > MAX_PROMPT_BYTES) return
+  const items = [
+    { text: normalized, createdAt: Date.now() },
+    ...readPromptHistory().filter((item) => item.text !== normalized),
+  ].slice(0, PROMPT_HISTORY_LIMIT)
+  const file = promptHistoryPath()
+  const temp = `${file}.${process.pid}.${Date.now()}.tmp`
+  try {
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(temp, `${JSON.stringify({ version: 1, items })}\n`, { encoding: 'utf8', mode: 0o600 })
+    renameSync(temp, file)
+    try {
+      chmodSync(file, 0o600)
+    } catch {
+      /* best-effort on filesystems without POSIX modes */
+    }
+  } catch {
+    try {
+      rmSync(temp, { force: true })
+    } catch {
+      /* a failed history write must never affect prompt execution */
+    }
+  }
+}
 
 /** Parse the YAML frontmatter of a SKILL.md file; null when absent/malformed. */
 function readSkillFrontmatter(file) {
@@ -206,6 +262,9 @@ const MAX_SCAN_FILE_BYTES = 512 * 1024 * 1024
 
 /** One in-flight scan at a time; concurrent callers share the result. */
 let usageScanInFlight = null
+let usageScanRevision = 0
+let usageScanFinishedAt = 0
+const USAGE_SCAN_FRESH_MS = 15_000
 
 let usageScanCacheLoaded = false
 let usageScanCacheDirty = false
@@ -248,6 +307,33 @@ function loadUsageScanCache(home) {
   }
 }
 
+/** Aggregate the already-persisted cache without touching or decoding logs. */
+function cachedUsageDays(home) {
+  loadUsageScanCache(home)
+  const merged = new Map()
+  for (const cached of USAGE_SCAN_CACHE.values()) mergeDayMap(merged, cached.dayMap)
+  return merged
+}
+
+/**
+ * Start an incremental scan without making the RPC caller wait. A short
+ * freshness window prevents the client's completion poll from immediately
+ * starting another scan.
+ */
+function refreshUsageDays(home, force = false) {
+  if (usageScanInFlight !== null) return usageScanInFlight
+  if (!force && Date.now() - usageScanFinishedAt < USAGE_SCAN_FRESH_MS) return null
+  const task = scanJsonlDays(home)
+  task.then(() => {
+    usageScanRevision += 1
+  }).catch(() => {
+    /* scanner failures degrade to the previous cache */
+  }).finally(() => {
+    usageScanFinishedAt = Date.now()
+  })
+  return task
+}
+
 /** Debounced write-back of the scan cache. */
 let usageScanSaveTimer = null
 function scheduleUsageScanSave(home) {
@@ -266,7 +352,12 @@ function scheduleUsageScanSave(home) {
       }
       const file = usageScanCachePath(home)
       mkdirSync(path.dirname(file), { recursive: true })
-      writeFileSync(file, `${JSON.stringify({ version: 1, files })}\n`, 'utf8')
+      writeFileSync(file, `${JSON.stringify({ version: 1, files })}\n`, { encoding: 'utf8', mode: 0o600 })
+      try {
+        chmodSync(file, 0o600)
+      } catch {
+        /* best-effort on filesystems without POSIX modes */
+      }
     } catch {
       /* cache write failure is non-fatal */
     }
@@ -401,14 +492,19 @@ export function scanJsonlDays(home) {
         : 0
       jobs.push({ file, offset, mtimeMs: info.mtimeMs, size: info.size })
     }
+    let removedCachedFile = false
     for (const file of [...USAGE_SCAN_CACHE.keys()]) {
-      if (!present.has(file)) USAGE_SCAN_CACHE.delete(file)
+      if (!present.has(file)) {
+        USAGE_SCAN_CACHE.delete(file)
+        removedCachedFile = true
+      }
     }
-    if (jobs.length === 0) return merged
+    if (removedCachedFile) scheduleUsageScanSave(home)
+    if (jobs.length === 0) return cachedUsageDays(home)
     const scannerPath = usageScannerPath()
-    if (scannerPath === undefined) return merged
+    if (scannerPath === undefined) return cachedUsageDays(home)
     const payload = await runUsageScanner(scannerPath, home, jobs.map((job) => ({ file: job.file, offset: job.offset })))
-    if (payload === null) return merged
+    if (payload === null) return cachedUsageDays(home)
     for (const job of jobs) {
       const result = payload.results[job.file]
       if (result === undefined || typeof result.days !== 'object') continue
@@ -434,20 +530,9 @@ export function scanJsonlDays(home) {
         frameEnd: Number(result.frameEnd ?? 0),
         dayMap,
       })
-      mergeDayMap(merged, dayMap)
-      if (job.offset === 0) {
-        // full rescan replaced the base; undo the stale pre-merge
-        // contribution for this file by rebuilding the aggregate below
-      }
-    }
-    if (jobs.some((job) => job.offset === 0)) {
-      const rebuilt = new Map()
-      for (const cached of USAGE_SCAN_CACHE.values()) mergeDayMap(rebuilt, cached.dayMap)
-      merged.clear()
-      for (const [key, value] of rebuilt) merged.set(key, value)
     }
     scheduleUsageScanSave(home)
-    return merged
+    return cachedUsageDays(home)
   })()
   usageScanInFlight = task
   task.finally(() => {
@@ -475,6 +560,7 @@ markRemote('load')
 markRemote('save')
 markRemote('balance')
 markRemote('usage')
+markRemote('promptHistory')
 markRemote('unarchiveSession')
 markRemote('listSessionCandidates')
 markRemote('desktopConfig')
@@ -501,6 +587,7 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
     super(ctx, 'globalInstructions')
     for (const init of REMOTE_INITIALIZERS) init.call(this)
     installNotificationEmitter(ctx)
+    installPromptHistory(ctx)
     installSessionMentionPipeline(ctx)
     registerMobileRoute(ctx)
     registerWhaleSpriteRoutes(ctx)
@@ -577,6 +664,12 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
     }
   }
 
+  /** Return recent accepted user prompts, newest first. */
+  promptHistory(limit) {
+    const count = Math.min(PROMPT_HISTORY_LIMIT, Math.max(1, Number(limit) || 50))
+    return { ok: true, items: readPromptHistory().slice(0, count) }
+  }
+
   /**
    * Aggregate token usage from the local session projection cache
    * (`$DSH_HOME/storages/session_projcache.json`) for stable totals plus a
@@ -584,14 +677,11 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
    * zstd — see scanJsonlDays). The projection cache owns stable aggregate
    * values; the log scan is what makes "today" real-time and accurate.
    */
-  async usage() {
+  usage(refresh) {
     try {
       const home = process.env.DSH_HOME?.trim() || path.join(homedir(), '.dsh')
       const file = path.join(home, 'storages', 'session_projcache.json')
-      if (!existsSync(file)) {
-        return { ok: true, totals: zeroTotals(), sessions: [], byDay: [], days: zeroDays(new Map()) }
-      }
-      const doc = JSON.parse(readFileSync(file, 'utf8'))
+      const doc = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
       const sessions = doc?.tables?.sessions ?? {}
       const rows = []
       const totals = zeroTotals()
@@ -622,13 +712,13 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
         })
       }
       rows.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-      // Per-day breakdown: async log scan (zstd decoding isolated in the
-      // scanner child process — see scanJsonlDays).
-      const dayMap = new Map()
-      if (usageScannerPath() !== undefined) {
-        const scanned = await scanJsonlDays(home)
-        for (const [key, value] of scanned) dayMap.set(key, value)
-      }
+      // Render immediately from the persistent cache. Any changed zstd logs
+      // are decoded in the background and the client silently polls once the
+      // scan is done, so opening the panel never waits on decompression.
+      const dayMap = cachedUsageDays(home)
+      const scanTask = usageScannerPath() === undefined
+        ? null
+        : refreshUsageDays(home, refresh === true)
       const byDay = [...dayMap.entries()]
         .sort((a, b) => a[0].localeCompare(b[0]))
         .slice(-14)
@@ -639,6 +729,8 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
         sessions: rows.slice(0, 50),
         byDay,
         days: zeroDays(dayMap),
+        refreshing: scanTask !== null,
+        revision: usageScanRevision,
       }
     } catch (err) {
       return { ok: false, error: String(err?.message ?? err) }
@@ -1531,6 +1623,34 @@ function installNotificationEmitter(ctx) {
         message: String(payload?.error?.message ?? payload?.error ?? '').slice(0, 200),
       })
     })
+  })
+}
+
+// — Prompt history -----------------------------------------------------------
+// Capture at the accepted host boundary rather than guessing from DOM key
+// events. Only root-agent messages with source.kind === 'user' are recorded;
+// system/plugin context, tool traffic, drafts, and rejected turns are ignored.
+
+function promptText(message) {
+  if (message?.source?.kind !== 'user' || !Array.isArray(message.content)) return ''
+  return message.content
+    .filter((block) => block?.type === 'text'
+      && typeof block.text === 'string'
+      && !block.text.startsWith(DESKTOP_VISION_BRIDGE_TEXT))
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
+function installPromptHistory(ctx) {
+  ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+    const decision = await next()
+    if (decision.kind === 'reject' || !ctx.agents.roots().includes(agent)) return decision
+    for (const message of messages ?? []) {
+      const text = promptText(message)
+      if (text.length > 0) rememberPrompt(text)
+    }
+    return decision
   })
 }
 

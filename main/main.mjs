@@ -223,7 +223,7 @@ async function openWindow(target) {
 
   win = window
   if (target === 'splash') {
-    await window.loadFile(SPLASH_PATH)
+    await window.loadFile(SPLASH_PATH, { query: { version: app.getVersion() } })
   } else {
     await window.loadURL(target)
   }
