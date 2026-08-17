@@ -8,8 +8,9 @@
 - 服务绑定 `127.0.0.1`，窗口加载本地 URL（沿用 `--port` 与「3080 被占用则自动选空闲端口」策略）；
 - 启动时先播放 Codex 风格的启动动画（`assets/splash.html`：终端网格背景 + 鲸鱼 logo 淡入 + 逐字打字 + 闪烁光标 + 状态轮播），服务就绪后淡出切换到应用；服务启动失败时动画会切到红色错误态；
 - DSH 数据沿用 `~/.dsh`：你在终端里配好的模型、会话、预设原样可用；
-- 设置面板新增「全局约束规则」分类（设置 → 全局约束规则）：文本框直接读写 dsh 原生注入每个会话的 `$DSH_HOME/AGENTS.md`（默认 `~/.dsh/AGENTS.md`，对应 Codex 的自定义指令），打开即载入现有内容，保存后新会话生效。实现为一个随应用打包的双面插件（`packages/dsh-desktop-instructions`：宿主 Typert 远程服务 + 客户端设置分类），通过 `--patch`（`assets/desktop.patch.yml` 的 insert 形式）挂载，并在启动时链接进 profile 的模块回退目录。
+- 设置面板新增「全局约束规则」分类（设置 → 全局约束规则）：文本框直接读写 dsh 原生注入每个会话的 `$DSH_HOME/AGENTS.md`（默认 `~/.dsh/AGENTS.md`，对应 Codex 的自定义指令），打开即载入现有内容，保存后新会话生效。实现为一个随应用打包的双面插件（`packages/dsh-desktop`：宿主 Typert 远程服务 + 客户端设置分类），通过 `--patch`（`assets/desktop.patch.yml` 的 insert 形式）挂载，并在启动时链接进 profile 的模块回退目录。
 另：桌面端会话页右上角的余额徽章现在可以直接点击，一键跳转 DeepSeek 开放平台充值页（platform.deepseek.com/top_up），刷新按钮不受影响。
+- 输入区的模型选择器显示为鲸鱼思考强度变阻器，固定六档顺序为 `Flash·Off → Flash·High → Flash·Max → V4 Pro·Off → V4 Pro·High → V4 Pro·Max`。六档各使用一套透明底 24 帧动画：Flash 保持轻快，Pro 的动作和表情更有力量，因而 Flash 最高档不会显得比 Pro 更努力。动画遵循系统“减少动态效果”设置；桌面窗口与手机端使用同一组本地同源素材。
 - 输入框支持 Codex 风格的 `@会话` 提及：输入 `@` 弹出触发菜单（「会话」组，按标题 / 会话 id / 工作目录过滤），选中后插入以会话标题为标签的 chip；发送时 chip 序列化为规范的 `@[标题](dsh-session:<base64url id>)` 提及，宿主在 `agent/pre-step` 边界识别提及，并把被引用会话的当前上下文快照作为只读 recall 上下文注入本轮——与斜杠调用 Skill 同一条管线（客户端 `inputTriggers` 注册 `@` 触发源 + 宿主 pre-step 注入），复用 rc.6 内置的 `session-reference` 解析器（候选排行 / 快照预算 / 渲染）与会话查询服务。
 - 发送图片：会话里**以图片本体显示**（桌面端走 shell 原生图库渲染，手机端 `/mobile` 同样渲染），多张图片全部保留；愿景桥的描述文字（`[The user attached…]`）只发给模型、不再出现在聊天记录里。实现：`scripts/apply-vision-bridge.mjs` 在准入时保留 image 块并附描述，在切换模型时认可已桥接图片，在模型请求边界剥离 image 块，并在聊天记录显示层过滤描述块。
 - 会话行菜单支持“删除会话”：二次确认后停止当前根会话（若正在运行）、从工作区与归档记账中解绑，并永久删除持久日志。该能力来自仓库本地构建；桌面打包前由 `scripts/sync-monorepo-overrides.mjs` 覆盖相关发布依赖，避免源码已改而 `.app` 仍运行旧包。
@@ -24,7 +25,7 @@
 | `main/menu.mjs` / `main/tray.mjs` | macOS 菜单栏与托盘 |
 | `assets/splash.html` | 启动动画（自包含单文件，无外部资源） |
 | `assets/desktop.patch.yml` | 桌面壳补丁层（insert 形式挂载全局约束规则插件行） |
-| `packages/dsh-desktop-instructions/` | 双面插件：宿主 `globalInstructions` 远程服务（读写 `$DSH_HOME/AGENTS.md`，局域网状态与二维码）+ 客户端设置分类 + `@会话` 提及 + `/mobile` 手机端页面（`lib/mobile.js` 同源挂载，直连同一 `/api` 与 `events.mux` 流） |
+| `packages/dsh-desktop/` | 双面插件：宿主 `globalInstructions` 远程服务、鲸鱼序列帧同源路由、客户端设置分类与变阻器、`@会话` 提及、`/mobile` 手机端页面；`lib/whale-sprites/` 存放六套 6×4 无损 WebP 图集 |
 | `scripts/build-icon.mjs` | 用官方鲸鱼 logo 生成应用图标与托盘图标 |
 | `scripts/sync-monorepo-overrides.mjs` | 将仓库本地构建的会话删除功能同步进桌面依赖树 |
 | `scripts/apply-vision-bridge.mjs` | 将 GUI 图片保存为原生附件并委派给 `vision` MCP 的可重建补丁 |

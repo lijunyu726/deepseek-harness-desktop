@@ -1323,30 +1323,47 @@ window.__ModuleLoader__.load({
     // One slider spanning both DeepSeek models: each model's reasoning
     // efforts run left→right (off → max), then the next model picks up, so
     // the rheostat reads Flash·Off … Flash·Max | V4 Pro·Off … V4 Pro·Max.
-    // The knob is a DeepSeek-logo-style flat blue whale (hand-drawn SVG).
-    // Level drives the whole scene: the face changes from sleepy to
-    // full-effort, the whale swims harder (faster bob, faster tail, forward
-    // lean), bubbles rise in the track, and only the MAX level spouts.
+    // Every stop owns a lossless 24-frame sprite animation. Flash stays
+    // light/fast while Pro reads as heavier and more forceful, so Flash·Max
+    // never visually works harder than any Pro stop.
 
     const RHEOSTAT_CSS = [
-      '.dsh-rheostat { display: inline-flex; align-items: center; width: clamp(128px, 30vw, 220px); }',
-      '.dsh-rheostat-track { position: relative; width: 100%; height: 26px; border-radius: 999px; background: rgba(128,140,160,0.14); border: 1px solid rgba(128,140,160,0.28); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; }',
+      '.dsh-rheostat { display: inline-flex; align-items: center; width: clamp(150px, 32vw, 250px); padding: 3px 0; }',
+      '.dsh-rheostat-track { position: relative; width: 100%; height: 36px; border-radius: 999px; background: rgba(128,140,160,0.14); border: 1px solid rgba(128,140,160,0.28); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
       '.dsh-rheostat-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; transition: width 0.22s ease, background 0.3s ease; }',
-      '.dsh-rheostat-label { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 11px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.96); text-shadow: 0 1px 3px rgba(10,20,40,0.55); pointer-events: none; z-index: 2; }',
-      '.dsh-rheostat-whale { position: absolute; top: 50%; left: 13px; transform: translate(-50%, -50%); width: 30px; height: 19px; z-index: 3; pointer-events: none; transition: left 0.22s ease; filter: drop-shadow(0 2px 4px rgba(8,16,32,0.45)); }',
-      '.dsh-rheostat-whale > svg { width: 100%; height: 100%; display: block; animation: dsh-whale-bob 2.6s ease-in-out infinite; }',
-      '.dsh-rheostat-whale .dsh-whale-tail { transform-origin: 31px 13px; animation: dsh-whale-tail var(--tailt, 1.1s) ease-in-out infinite; }',
-      '.dsh-rheostat-spout { position: absolute; left: 30%; top: -9px; width: 14px; height: 12px; pointer-events: none; }',
-      '.dsh-rheostat-spout svg { width: 100%; height: 100%; }',
-      '.dsh-spout-d { animation: dsh-spout-rise 1.15s ease-in-out infinite; }',
-      '.dsh-spout-d:nth-of-type(2) { animation-delay: 0.18s; }',
-      '.dsh-spout-d:nth-of-type(3) { animation-delay: 0.36s; }',
-      '.dsh-rheostat-particle { position: absolute; border-radius: 50%; background: rgba(158,203,255,0.26); border: 1px solid rgba(158,203,255,0.75); pointer-events: none; animation: dsh-particle-rise 2.8s linear infinite; }',
-      '@keyframes dsh-whale-bob { 0%, 100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(calc(-1 * var(--dsh-bob, 2.4px))) rotate(var(--dsh-sway, 3deg)); } }',
-      '@keyframes dsh-whale-tail { 0%, 100% { transform: rotate(-10deg); } 50% { transform: rotate(11deg); } }',
-      '@keyframes dsh-spout-rise { 0% { transform: translateY(3px); opacity: 0; } 25% { opacity: 1; } 100% { transform: translateY(-6px); opacity: 0; } }',
-      '@keyframes dsh-particle-rise { 0% { transform: translateY(0) scale(0.75); opacity: 0; } 12% { opacity: 0.95; } 80% { opacity: 0.45; } 100% { transform: translateY(-15px) scale(1); opacity: 0; } }',
+      '.dsh-rheostat-label { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 11px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.96); text-shadow: 0 1px 3px rgba(10,20,40,0.58); pointer-events: none; z-index: 2; }',
+      '.dsh-rheostat-whale { position: absolute; top: 50%; left: 24px; transform: translate(-50%, -50%); width: 66px; height: 48px; z-index: 3; pointer-events: none; transition: left 0.22s ease; filter: drop-shadow(0 2px 4px rgba(8,16,32,0.42)); animation: dsh-whale-state-in 0.16s ease-out both; }',
+      '.dsh-rheostat-whale-frame { position: absolute; inset: 0; display: block; background-repeat: no-repeat; background-size: 600% 400%; background-position: 0% 0%; animation: dsh-whale-sprite var(--sprite-duration, 2.4s) step-end infinite; }',
+      '@keyframes dsh-whale-state-in { from { opacity: 0.28; transform: translate(-50%, -50%) scale(0.94); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }',
+      '@keyframes dsh-whale-sprite {',
+      '  0% { background-position: 0% 0%; }',
+      '  4.1667% { background-position: 20% 0%; }',
+      '  8.3333% { background-position: 40% 0%; }',
+      '  12.5% { background-position: 60% 0%; }',
+      '  16.6667% { background-position: 80% 0%; }',
+      '  20.8333% { background-position: 100% 0%; }',
+      '  25% { background-position: 0% 33.3333%; }',
+      '  29.1667% { background-position: 20% 33.3333%; }',
+      '  33.3333% { background-position: 40% 33.3333%; }',
+      '  37.5% { background-position: 60% 33.3333%; }',
+      '  41.6667% { background-position: 80% 33.3333%; }',
+      '  45.8333% { background-position: 100% 33.3333%; }',
+      '  50% { background-position: 0% 66.6667%; }',
+      '  54.1667% { background-position: 20% 66.6667%; }',
+      '  58.3333% { background-position: 40% 66.6667%; }',
+      '  62.5% { background-position: 60% 66.6667%; }',
+      '  66.6667% { background-position: 80% 66.6667%; }',
+      '  70.8333% { background-position: 100% 66.6667%; }',
+      '  75% { background-position: 0% 100%; }',
+      '  79.1667% { background-position: 20% 100%; }',
+      '  83.3333% { background-position: 40% 100%; }',
+      '  87.5% { background-position: 60% 100%; }',
+      '  91.6667% { background-position: 80% 100%; }',
+      '  95.8333% { background-position: 100% 100%; }',
+      '  100% { background-position: 0% 0%; }',
+      '}',
+      '@media (prefers-reduced-motion: reduce) { .dsh-rheostat-whale, .dsh-rheostat-fill { transition: none; animation: none; } .dsh-rheostat-whale-frame { animation: none; background-position: 0% 0%; } }',
     ].join('\n')
 
     let rheostatStyleInstalled = false
@@ -1360,67 +1377,19 @@ window.__ModuleLoader__.load({
       document.head.appendChild(style)
     }
 
-    // DeepSeek-logo-style flat blue whale: rounded plump body, upturned
-    // fluke, no realism — hand-drawn to match the brand mark's minimalism.
-    const WHALE_BODY = ''
-      + '<g class="dsh-whale-tail"><path d="M33.5 13.5 C35.5 12 37 8.5 36.5 5.5 C36.2 3.5 34.5 2.5 32.8 3.2 C30.2 4.3 29.5 5.8 30 7.5 C30.3 8.7 30 9.6 29 10.3 C27.2 11.4 24 11 22 11.5 C25.4 13 30.5 14.8 33.5 13.5 Z" fill="#4D6BFE"/></g>'
-      + '<path d="M7.5 13.5 C4.5 12.2 3 9.5 3.6 6.8 C4.2 4.2 7 2.6 10.5 3 C15.2 3.5 19.5 5.6 22 8.6 C24.6 11.7 24.8 14.6 23 17.6 C21.6 19.9 18.6 21.2 15 21.3 C11 21.4 7 20 5 17.2 C4 15.8 4.8 14.2 7.5 13.5 Z" fill="#4D6BFE"/>'
-      + '<path d="M10 19.5 C8.2 17.8 7.8 15.6 9.2 13.9" stroke="#3E5BD6" stroke-width="1" fill="none" stroke-linecap="round"/>'
-
-    // Face per level: 0 sleepy → 5 full effort (open mouth, fierce brows).
-    // Bolder silhouettes so each level reads distinctly at knob size.
-    const FACE_SETS = [
-      // 0 Flash·Off — 闭眼安睡 + 微笑
-      '<path d="M7.4 8.7 Q8.6 10 9.8 8.7" stroke="#ffffff" stroke-width="1.2" fill="none" stroke-linecap="round"/>'
-        + '<path d="M11.6 8.7 Q12.8 10 14 8.7" stroke="#ffffff" stroke-width="1.2" fill="none" stroke-linecap="round"/>'
-        + '<path d="M8.2 12 Q10.3 13.2 12.4 12" stroke="#ffffff" stroke-width="1" fill="none" stroke-linecap="round"/>',
-      // 1 Flash·High — 平静圆眼 + 微笑
-      '<circle cx="8.9" cy="9" r="1.15" fill="#ffffff"/><circle cx="8.95" cy="8.85" r="0.48" fill="#2E45A8"/>'
-        + '<circle cx="12.8" cy="9" r="1.15" fill="#ffffff"/><circle cx="12.85" cy="8.85" r="0.48" fill="#2E45A8"/>'
-        + '<path d="M8.4 12.2 Q10.4 13.3 12.4 12.2" stroke="#ffffff" stroke-width="0.9" fill="none" stroke-linecap="round"/>',
-      // 2 Flash·Max — 专注：立眉 + 平嘴
-      '<path d="M6.9 6.9 L10.3 7.9" stroke="#ffffff" stroke-width="1.1" stroke-linecap="round"/>'
-        + '<path d="M14.8 6.9 L11.4 7.9" stroke="#ffffff" stroke-width="1.1" stroke-linecap="round"/>'
-        + '<circle cx="8.9" cy="9.3" r="1.02" fill="#ffffff"/><circle cx="8.95" cy="9.15" r="0.42" fill="#2E45A8"/>'
-        + '<circle cx="12.8" cy="9.3" r="1.02" fill="#ffffff"/><circle cx="12.85" cy="9.15" r="0.42" fill="#2E45A8"/>'
-        + '<path d="M8.6 12.3 L13.1 12.3" stroke="#ffffff" stroke-width="0.9" stroke-linecap="round"/>',
-      // 3 V4 Pro·Off — 认真：压眉 + 眯眼 + 抿嘴
-      '<path d="M6.6 6.8 L10.4 8.1" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round"/>'
-        + '<path d="M15.1 6.8 L11.3 8.1" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round"/>'
-        + '<ellipse cx="8.9" cy="9.3" rx="0.98" ry="0.58" fill="#ffffff"/><circle cx="9" cy="9.2" r="0.34" fill="#2E45A8"/>'
-        + '<ellipse cx="12.8" cy="9.3" rx="0.98" ry="0.58" fill="#ffffff"/><circle cx="12.9" cy="9.2" r="0.34" fill="#2E45A8"/>'
-        + '<path d="M8.7 12.2 L13 12.2" stroke="#ffffff" stroke-width="0.8" stroke-linecap="round"/>',
-      // 4 V4 Pro·High — 努力：倒八字眉 + 咬牙
-      '<path d="M6.4 6.5 L10.6 8.3" stroke="#ffffff" stroke-width="1.25" stroke-linecap="round"/>'
-        + '<path d="M15.3 6.5 L11.1 8.3" stroke="#ffffff" stroke-width="1.25" stroke-linecap="round"/>'
-        + '<ellipse cx="8.9" cy="9.5" rx="0.92" ry="0.52" fill="#ffffff"/><circle cx="8.8" cy="9.4" r="0.32" fill="#2E45A8"/>'
-        + '<ellipse cx="12.8" cy="9.5" rx="0.92" ry="0.52" fill="#ffffff"/><circle cx="12.7" cy="9.4" r="0.32" fill="#2E45A8"/>'
-        + '<rect x="8.3" y="11.7" width="5.1" height="1.5" rx="0.7" fill="#ffffff"/>'
-        + '<path d="M9.2 11.7 L9.2 13.2 M10.85 11.7 L10.85 13.2 M12.5 11.7 L12.5 13.2" stroke="#2E45A8" stroke-width="0.4"/>',
-      // 5 V4 Pro·Max — 全力：狠眉 + 怒目 + 张嘴
-      '<path d="M6.2 6.2 L10.8 8.6" stroke="#ffffff" stroke-width="1.35" stroke-linecap="round"/>'
-        + '<path d="M15.5 6.2 L10.9 8.6" stroke="#ffffff" stroke-width="1.35" stroke-linecap="round"/>'
-        + '<path d="M7.6 9.1 L10.2 9.9" stroke="#ffffff" stroke-width="1" stroke-linecap="round"/>'
-        + '<path d="M14.1 9.1 L11.5 9.9" stroke="#ffffff" stroke-width="1" stroke-linecap="round"/>'
-        + '<circle cx="8.6" cy="9.9" r="0.3" fill="#2E45A8"/><circle cx="12.9" cy="9.9" r="0.3" fill="#2E45A8"/>'
-        + '<ellipse cx="10.8" cy="12.5" rx="1.55" ry="1.15" fill="#ffffff"/>'
-        + '<ellipse cx="10.8" cy="12.45" rx="1.12" ry="0.72" fill="#2E45A8"/>'
-        + '<path d="M10.1 12.1 Q10.8 11.7 11.5 12.1" stroke="#ffffff" stroke-width="0.35" fill="none"/>',
+    const WHALE_SPRITE_BASE = '/dsh-desktop/whale-sprites'
+    const WHALE_STATES = [
+      { model: 'deepseek-v4-flash', effort: 'off', modelLabel: 'Flash', sprite: 'flash-off', duration: 3.0 },
+      { model: 'deepseek-v4-flash', effort: 'high', modelLabel: 'Flash', sprite: 'flash-high', duration: 2.0 },
+      { model: 'deepseek-v4-flash', effort: 'max', modelLabel: 'Flash', sprite: 'flash-max', duration: 1.7 },
+      { model: 'deepseek-v4-pro', effort: 'off', modelLabel: 'V4 Pro', sprite: 'pro-off', duration: 2.4 },
+      { model: 'deepseek-v4-pro', effort: 'high', modelLabel: 'V4 Pro', sprite: 'pro-high', duration: 1.6 },
+      { model: 'deepseek-v4-pro', effort: 'max', modelLabel: 'V4 Pro', sprite: 'pro-max', duration: 1.333 },
     ]
 
-    // Flat-style spout (max level only): three droplets + a stem, looping.
-    const SPOUT_SVG = '<svg viewBox="0 0 14 12" aria-hidden="true">'
-      + '<circle class="dsh-spout-d" cx="3.4" cy="7.4" r="1" fill="#9ECBFF"/>'
-      + '<path class="dsh-spout-d" d="M6.4 8.6 Q6.8 5.4 7.8 3.4" stroke="#4D6BFE" stroke-width="1.1" fill="none" stroke-linecap="round"/>'
-      + '<circle class="dsh-spout-d" cx="10.6" cy="7.4" r="1" fill="#9ECBFF"/>'
-      + '</svg>'
-
-    // Per-level swim params (0 = Flash·Off, 5 = V4 Pro·Max).
-    const BOB_AMPS = [2.2, 2.6, 3.0, 3.4, 4.2, 5.2]
-    const BOB_DURS = [2.6, 2.3, 2.0, 1.7, 1.35, 1.05]
-    const TAIL_DURS = [1.15, 1.0, 0.9, 0.78, 0.64, 0.52]
-    const LEANS = [0, 0, -1.5, -2.5, -4.5, -7]
-    const SWAYS = [2.5, 3, 3.5, 4, 4.6, 5.2]
+    function whaleSpriteUrl(sprite) {
+      return `${WHALE_SPRITE_BASE}/${sprite}.webp`
+    }
 
     function ModelRheostat({ sessionId, locked, connection }) {
       const [groups, setGroups] = react.useState(null)
@@ -1433,22 +1402,31 @@ window.__ModuleLoader__.load({
         installRheostatStyle()
       }, [])
 
+      react.useEffect(() => {
+        for (const state of WHALE_STATES) {
+          const image = new Image()
+          image.src = whaleSpriteUrl(state.sprite)
+        }
+      }, [])
+
       const stops = react.useMemo(() => {
         const group = (groups ?? []).find((g) => g.id === 'deepseek-official')
         if (group === undefined) return []
-        const out = []
-        for (const model of group.models ?? []) {
-          for (const effort of model.reasoning?.efforts ?? []) {
-            out.push({
-              provider: group.id,
-              model: model.id,
-              effort: effort.id,
-              modelName: model.name ?? model.id,
-              effortName: effort.name ?? effort.id,
-            })
-          }
-        }
-        return out
+        return WHALE_STATES.flatMap((state) => {
+          const model = (group.models ?? []).find((entry) => entry.id === state.model)
+          const effort = (model?.reasoning?.efforts ?? []).find((entry) => entry.id === state.effort)
+          if (model === undefined || effort === undefined) return []
+          return [{
+            provider: group.id,
+            model: state.model,
+            effort: state.effort,
+            modelName: model.name ?? state.model,
+            effortName: effort.name ?? state.effort,
+            modelLabel: state.modelLabel,
+            sprite: state.sprite,
+            duration: state.duration,
+          }]
+        })
       }, [groups])
 
       react.useEffect(() => {
@@ -1527,39 +1505,16 @@ window.__ModuleLoader__.load({
       const ratio = level
       const hue = 205 + level * 72
       const stop = stops[idx]
-      const shortName = `${stop.model === 'deepseek-v4-flash' ? 'Flash' : 'V4 Pro'} · ${stop.effortName}`
+      const shortName = `${stop.modelLabel} · ${stop.effortName}`
       const title = `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击或拖动调整）`
       const fillStyle = {
-        width: `calc(13px + (100% - 26px) * ${ratio})`,
+        width: `calc(24px + (100% - 48px) * ${ratio})`,
         background: `linear-gradient(90deg, hsl(${hue}, 85%, 58%), hsl(${Math.min(hue + 24, 288)}, 88%, 62%))`,
       }
       const whaleStyle = {
-        left: `calc(13px + (100% - 26px) * ${ratio})`,
-        '--dsh-lean': `${LEANS[idx]}deg`,
-        '--dsh-bob': `${BOB_AMPS[idx]}px`,
-        '--dsh-sway': `${SWAYS[idx]}deg`,
-        '--tailt': `${TAIL_DURS[idx]}s`,
-        transform: `translate(-50%, -50%) rotate(${LEANS[idx]}deg)`,
+        left: `calc(24px + (100% - 48px) * ${ratio})`,
+        '--sprite-duration': `${stop.duration}s`,
       }
-      const bubbleCount = Math.min(9, 3 + Math.round(level * 6))
-      const bubbles = []
-      for (let i = 0; i < bubbleCount; i += 1) {
-        const left = 8 + ((i * 37) % 85)
-        const delay = (i * 0.7) % 2.8
-        const size = 2.4 + (i % 3) * 0.7
-        bubbles.push(react.createElement('span', {
-          key: i,
-          className: 'dsh-rheostat-particle',
-          style: {
-            left: `${left}%`,
-            width: `${size}px`,
-            height: `${size}px`,
-            animationDelay: `${delay.toFixed(2)}s`,
-            bottom: `${18 + (i % 3) * 22}%`,
-          },
-        }))
-      }
-      const whaleSvg = WHALE_BODY + (FACE_SETS[idx] ?? FACE_SETS[0])
       return react.createElement(
         'div',
         { className: 'dsh-rheostat', title },
@@ -1574,19 +1529,18 @@ window.__ModuleLoader__.load({
             onPointerCancel: onPointerUp,
           },
           react.createElement('div', { className: 'dsh-rheostat-fill', style: fillStyle }),
-          bubbles,
           react.createElement('span', { className: 'dsh-rheostat-label' }, shortName),
           react.createElement(
             'span',
-            { className: 'dsh-rheostat-whale', style: whaleStyle },
-            react.createElement('svg', {
-              viewBox: '0 0 40 24',
-              style: { animationDuration: `${BOB_DURS[idx]}s` },
-              dangerouslySetInnerHTML: { __html: whaleSvg },
-            }),
-            idx === 5 && react.createElement('span', {
-              className: 'dsh-rheostat-spout',
-              dangerouslySetInnerHTML: { __html: SPOUT_SVG },
+            {
+              key: `${stop.model}:${stop.effort}`,
+              className: 'dsh-rheostat-whale',
+              style: whaleStyle,
+            },
+            react.createElement('span', {
+              className: 'dsh-rheostat-whale-frame',
+              'aria-hidden': 'true',
+              style: { backgroundImage: `url("${whaleSpriteUrl(stop.sprite)}")` },
             }),
           ),
         ),

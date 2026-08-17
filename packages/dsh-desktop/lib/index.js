@@ -20,6 +20,7 @@ import SessionReferenceResolver, { parseSessionReferenceText } from '@deepseek-a
 import QRCode from 'qrcode'
 import { fileURLToPath } from 'node:url'
 import { registerMobileRoute } from './mobile.js'
+import { registerWhaleSpriteRoutes } from './whale-sprites.js'
 
 /** Real path of this module (symlink-resolved), used to locate app assets. */
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -502,6 +503,7 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
     installNotificationEmitter(ctx)
     installSessionMentionPipeline(ctx)
     registerMobileRoute(ctx)
+    registerWhaleSpriteRoutes(ctx)
     ensureVisionCommand(ctx)
     installConnectionTrustHeal(ctx)
   }

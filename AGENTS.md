@@ -16,7 +16,8 @@ main/                  Electron 主进程（入口 main.mjs、服务子进程 se
 assets/                随应用打包的静态资源（desktop.patch.yml、usage-scan.mjs、
                        vision-server.mjs、splash.html）
 packages/dsh-desktop/  双面 Cordis 插件（lib/index.js = 主机端，lib/client.js = 浏览器端，
-                       lib/mobile.js = 手机布局引导层；打包成 tgz 再装入 node_modules）
+                       lib/mobile.js = 手机布局引导层，lib/whale-sprites/ = 六档鲸鱼图集；
+                       打包成 tgz 再装入 node_modules）
 scripts/               构建链：apply-vision-bridge.mjs、pack-plugin.mjs、
                        ensure-peer-deps.mjs、sync-monorepo-overrides.mjs、build-icon.mjs
 release/               构建产物（.app/.dmg/.zip）——只进 git 的忽略列表，绝不提交
@@ -39,6 +40,7 @@ node_modules/          安装产物——绝不提交
 - **日志扫描是增量的**：会话日志是只追加的 zstd 帧流；扫描结果（mtime/size/frameEnd/按日用量）持久化在 `$DSH_HOME/desktop/usage-scan-cache.json`，重启后不变的文件零开销。
 - **路径自愈**：插件内所有定位 app 资源（usage-scan.mjs、vision-server.mjs 模板）都用「模块目录相对路径 + `process.execPath` 回退」双候选；`ensureVisionCommand` 会在启动时把 vision MCP 行的 `command` 从系统 `node` 改写为应用自带 Node（app 移动后自动重写）。**不要把绝对路径写死在插件里。**
 - **插槽优先级**：接管 shell 的单席位要用比 0 更低的 priority（鲸鱼变阻器用 -10）。
+- **鲸鱼图集契约**：六档素材固定为 `flash-off/high/max`、`pro-off/high/max`；每张是 1056×512、6×4 网格、24 帧、176×128 单元格的带透明通道无损 WebP。客户端档位顺序必须显式映射，不能依赖模型接口返回顺序；素材必须由宿主精确同源路由提供并随插件 tgz 打包。
 - **客户端连接面**：Typert 远程走 `connection.rpc.call('/api', 'globalInstructions/<m>')`；shell 原生 unary 走 `connection.api.sessions/llm/...`（不是 `connection.sessions`）。
 - **安全围栏**：`settings.describe`/`credentials.*` 被 dsh 硬锁回环地址，手机端会 403——这是上游安全设计，不要试图在补丁里放宽。
 - **局域网可信名单**：dsh 启动瞬间对网络接口做一次性快照，网络切换时可能拿到空集导致手机 403。插件每 30 秒把当前 IPv4 补进 connection 行的 `trustedHosts`（`entry.update`，不写补丁文件），并过滤 198.18/15、169.254/16 这类不可达的虚拟隧道地址。

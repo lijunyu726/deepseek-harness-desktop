@@ -30,7 +30,9 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 ### 鲸鱼思考强度变阻器
 
-接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：一个滑块串联两个 DeepSeek 模型共六档（Flash·Off→High→Max→V4 Pro·Off→High→Max）。选中即走 `session.selectModel` 官方通道（会话级状态，桌面/手机同流实时同步）。视觉层全部为手绘 SVG + CSS：logo 风格扁平蓝鲸、六档表情递进（闭眼→圆眼→立眉→压眉→咬牙→张嘴）、档位驱动泳速/前倾、最高档才喷水、气泡随档位增多。
+接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：一个滑块串联两个 DeepSeek 模型共六档，客户端用显式状态表固定为 Flash·Off→High→Max→V4 Pro·Off→High→Max，不依赖模型接口的返回顺序。选中即走 `session.selectModel` 官方通道（会话级状态，桌面/手机同流实时同步）。
+
+每档拥有独立的透明底 24 帧动画，运行时素材为 `lib/whale-sprites/*.webp` 下的 1056×512 无损 WebP（6×4 网格，单格 176×128）。宿主 `lib/whale-sprites.js` 在 `/dsh-desktop/whale-sprites/<state>.webp` 注册六个精确同源路由，浏览器端预加载后以 CSS `background-position` 播放；切档通过 React key 重启动画，系统开启“减少动态效果”时停在首帧。Flash 三档保持轻快，Pro 三档的动作语义更强，避免 Flash·Max 比 Pro 更努力。
 
 ### @会话提及
 

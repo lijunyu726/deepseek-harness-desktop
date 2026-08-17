@@ -33,6 +33,8 @@
     "lib/index.js",
     "lib/client.js",
     "lib/mobile.js",
+    "lib/whale-sprites.js",
+    "lib/whale-sprites/*.webp",
     "package.json"
   ],
   "license": "MIT"
