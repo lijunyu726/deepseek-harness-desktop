@@ -55,6 +55,16 @@ npm run dev          # 以开发模式启动（服务直接跑在 electron 的 n
 - 开发调试时如需与已安装实例共存，用 `DSH_USER_DATA_DIR=/tmp/dsh-uitest` 隔离开发实例的配置目录（锁、缓存、日志互不干扰）。
 - 修改 `packages/dsh-desktop/lib/` 后：`npm run pack:plugin`（打进 tarball 并刷新 node_modules 里的插件副本），然后 `npm run dist` 重新打包；每次 `dist` 也会自动跑这一步。
 
+## 从新克隆构建
+
+```bash
+npm install                                   # 恢复依赖（按锁文件）
+DSH_MONOREPO=/path/to/deepseek-harness npm run sync:monorepo   # 可选：恢复本地 fork 特性覆盖层
+npm run dist                                  # 打包
+```
+
+> 本项目位于 `/Volumes/S690/codes/deepseek-harness-desktop`，独立 Git 仓库（私有 GitHub：lijunyu726/deepseek-harness-desktop）。没有 DSH 大仓时也能构建运行，只是缺会话删除等 fork 特性。
+
 ## 打包
 
 ```bash
