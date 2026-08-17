@@ -1,0 +1,38 @@
+appId: ai.deepseek.harness
+productName: DeepSeek Harness
+copyright: Copyright © 2025 DeepSeek
+
+# The dsh server child process must resolve its node_modules from the real
+# filesystem (ELECTRON_RUN_AS_NODE children cannot read inside an asar), so
+# the app ships unpacked.
+asar: false
+
+directories:
+  output: release
+  buildResources: build
+
+npmRebuild: false
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  # No Developer ID configured; build unsigned (right-click → 打开 for first launch).
+  identity: null
+  target:
+    - target: dmg
+      arch: arm64
+    - target: zip
+      arch: arm64
+
+dmg:
+  title: "DeepSeek Harness ${version}"
+  iconSize: 96
+  contents:
+    - x: 140
+      y: 150
+    - x: 380
+      y: 150
+      type: link
+      path: /Applications
+
+electronLanguages: [en, zh_CN]

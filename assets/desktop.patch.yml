@@ -1,0 +1,6 @@
+# Desktop-shell row: settings categories + desktop notifications.
+# Mounted by the desktop app with `--patch` (insert form); the plugin package
+# ships inside the app's node_modules.
+- insert:
+    - id: desktop
+      name: '@deepseek-ai/dsh-desktop'
