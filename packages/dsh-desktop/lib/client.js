@@ -1364,7 +1364,7 @@ window.__ModuleLoader__.load({
       // Bare timeline rail: ticks only, no pill shell. z-index stays below
       // the shell's overlay layer (settings panel = 1000), so the rail never
       // floats above settings or other panels.
-      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 0; padding: 2px 0; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
+      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 2px 0; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
       '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
       // Visual bar 10x2.5px; the padding gives every tick a generous
       // invisible hit area (~14x12.5px) so selection doesn't need pixel aim.
