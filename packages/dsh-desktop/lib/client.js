@@ -1642,7 +1642,7 @@ window.__ModuleLoader__.load({
       '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
       // The whale IS the thumb: it sits inside the track at the current stop
       // and can be grabbed and dragged to switch stops.
-      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 28px !important; height: 22px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
+      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 34px !important; height: 28px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
       '.dsh-rheostat-whale.dragging { cursor: grabbing; }',
       // Advanced mode: the original two-level model menu (models → efforts),
       // styled like the shell's native selector.
@@ -1984,7 +1984,7 @@ window.__ModuleLoader__.load({
       const title = noStops
         ? `模型：${triggerName}`
         : `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
-      const THUMB = 14 // half of the whale width; the whale IS the thumb
+      const THUMB = 17 // half of the whale width; the whale IS the thumb
       const fillStyle = noStops ? null : {
         width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
         background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
