@@ -1619,14 +1619,14 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-trigger-effort { color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; }',
       '.dsh-rheo-chevron { display: inline-flex; color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; transition: transform 0.12s; }',
       '.dsh-rheo-chevron.open { transform: rotate(180deg); }',
-      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 12px 8px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(18,21,30,0.97); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
+      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30; width: 240px; padding: 8px 6px; border: 1px solid rgba(128,140,160,0.3); border-radius: 12px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 32px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
       '@keyframes dsh-rheo-pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }',
       // 高级 accordion toggle (triangle rotates when expanded).
       '.dsh-rheo-adv-toggle { display: flex; align-items: center; gap: 6px; width: 100%; border: none; background: transparent; color: rgba(232,236,246,0.9); font: inherit; font-size: 12.5px; cursor: pointer; padding: 2px 6px 8px; text-align: left; }',
       '.dsh-rheo-adv-toggle:hover { color: #fff; }',
       '.dsh-rheo-adv-tri { display: inline-flex; color: rgba(220,225,238,0.55); transition: transform 0.15s ease; }',
       '.dsh-rheo-adv-toggle.open .dsh-rheo-adv-tri { transform: rotate(90deg); }',
-      '.dsh-rheostat-track { position: relative; width: 100%; height: 44px !important; min-height: 44px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
+      '.dsh-rheostat-track { position: relative; width: 100%; height: 32px !important; min-height: 32px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
       '.dsh-rheostat-track:hover { border-color: rgba(130,162,255,0.5); box-shadow: 0 0 0 3px rgba(77,107,254,0.09); }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
       '.dsh-rheostat-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; overflow: hidden !important; transition: width 0.22s ease, background 0.3s ease; }',
@@ -1642,7 +1642,7 @@ window.__ModuleLoader__.load({
       '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
       // The whale IS the thumb: it sits inside the track at the current stop
       // and can be grabbed and dragged to switch stops.
-      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 36px !important; height: 28px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
+      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 28px !important; height: 22px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
       '.dsh-rheostat-whale.dragging { cursor: grabbing; }',
       // Advanced mode: the original two-level model menu (models → efforts),
       // styled like the shell's native selector.
@@ -1984,7 +1984,7 @@ window.__ModuleLoader__.load({
       const title = noStops
         ? `模型：${triggerName}`
         : `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
-      const THUMB = 18 // half of the whale width; the whale IS the thumb
+      const THUMB = 14 // half of the whale width; the whale IS the thumb
       const fillStyle = noStops ? null : {
         width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
         background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
