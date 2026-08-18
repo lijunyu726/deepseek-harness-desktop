@@ -2841,8 +2841,8 @@ window.__ModuleLoader__.load({
       )
 
       // --- File / folder upload: inject into the "+" command menu ---
-      // Use a MutationObserver to detect when the command menu opens and
-      // add "上传文件" and "上传文件夹" items at the top.
+      // The command menu has class _3e4SsG_menu (from dsh-client-ui-input-trigger).
+      // Watch for it to appear and inject upload items at the top of its viewport.
       const _fileInput = document.createElement('input')
       _fileInput.type = 'file'
       _fileInput.multiple = true
@@ -2859,7 +2859,6 @@ window.__ModuleLoader__.load({
           if (!input.files || input.files.length === 0) return
           const dt = new DataTransfer()
           Array.from(input.files).forEach((f) => dt.items.add(f))
-          // Find the conversation's hidden image input and dispatch
           const imgInput = document.querySelector('input[type="file"][accept*="image"]')
           if (imgInput) {
             const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files').set
@@ -2871,49 +2870,61 @@ window.__ModuleLoader__.load({
         input.click()
       }
 
-      let _uploadMenuInjected = false
+      const _MENU_CLASS = '_3e4SsG_menu'
+      const _VIEWPORT_CLASS = '_3e4SsG_viewport'
+      const _ITEM_CLASS = '_3e4SsG_item'
+      const _ITEM_NAME_CLASS = '_3e4SsG_itemName'
+      const _ITEM_ICON_CLASS = '_3e4SsG_itemIcon'
+
+      function _injectUploadItems(menu) {
+        if (menu.querySelector('[data-dsh-upload-item]')) return
+        const viewport = menu.querySelector(`.${_VIEWPORT_CLASS}`) || menu
+        const sampleItem = menu.querySelector(`.${_ITEM_CLASS}`)
+        const itemStyle = sampleItem ? sampleItem.getAttribute('style') || '' : ''
+
+        const fileIcon = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 1v9M3.5 6.5L7 10l3.5-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10.5v1.5h10v-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        const folderIcon = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M1.5 3.5h4l1.5 2h5.5v7h-11z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 8v3M6.5 9.5H3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+        const makeItem = (label, iconSvg, onClick) => {
+          const btn = document.createElement('button')
+          btn.setAttribute('data-dsh-upload-item', 'true')
+          btn.type = 'button'
+          btn.className = _ITEM_CLASS
+          btn.setAttribute('role', 'option')
+          // Copy styles from existing menu items
+          if (sampleItem) {
+            const cs = getComputedStyle(sampleItem)
+            btn.style.cssText = Array.from(cs).filter(p => !p.startsWith('-')).map(p => `${p}:${cs.getPropertyValue(p)}`).join(';')
+          }
+          btn.innerHTML = `<span class="${_ITEM_ICON_CLASS}" aria-hidden="true">${iconSvg}</span><span class="${_ITEM_NAME_CLASS}">${label}</span>`
+          btn.addEventListener('mousedown', (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onClick()
+          })
+          btn.onmouseenter = () => btn.style.background = 'rgba(128,140,160,0.16)'
+          btn.onmouseleave = () => btn.style.background = 'transparent'
+          return btn
+        }
+
+        const sep = document.createElement('div')
+        sep.setAttribute('data-dsh-upload-item', 'separator')
+        sep.style.cssText = 'height:1px;background:rgba(128,140,160,0.16);margin:4px 12px;'
+
+        const firstChild = viewport.firstChild
+        viewport.insertBefore(makeItem('上传文件', fileIcon, () => _triggerFileInput(_fileInput)), firstChild)
+        viewport.insertBefore(makeItem('上传文件夹', folderIcon, () => _triggerFileInput(_folderInput)), firstChild)
+        viewport.insertBefore(sep, firstChild)
+      }
+
       const _menuObserver = new MutationObserver((mutations) => {
         for (const m of mutations) {
           for (const node of m.addedNodes) {
             if (!(node instanceof HTMLElement)) continue
-            // The command menu is a listbox/popover that appears near the "+" button.
-            // Look for it by role or class pattern.
-            const menu = node.matches?.('[role="listbox"]')
+            const menu = node.classList?.contains(_MENU_CLASS)
               ? node
-              : node.querySelector?.('[role="listbox"]')
-            if (!menu) continue
-            // Check if it's the command menu (contains slash command items)
-            const items = menu.querySelectorAll('[role="option"], [data-command]')
-            if (items.length === 0 && !menu.textContent?.includes('/')) continue
-            // Avoid duplicate injection
-            if (menu.querySelector('[data-dsh-upload-item]')) continue
-            // Inject file/folder upload items at the top
-            const separator = document.createElement('div')
-            separator.setAttribute('data-dsh-upload-item', 'separator')
-            separator.style.cssText = 'height:1px;background:rgba(128,140,160,0.16);margin:4px 8px;'
-
-            const makeItem = (label, icon, onClick) => {
-              const btn = document.createElement('button')
-              btn.setAttribute('data-dsh-upload-item', 'true')
-              btn.type = 'button'
-              btn.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;padding:6px 12px;border:none;background:transparent;color:rgba(243,245,250,0.94);font:inherit;font-size:13px;cursor:pointer;border-radius:6px;text-align:left;'
-              btn.onmouseenter = () => btn.style.background = 'rgba(128,140,160,0.16)'
-              btn.onmouseleave = () => btn.style.background = 'transparent'
-              btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">${icon}</svg><span>${label}</span>`
-              btn.addEventListener('click', (e) => {
-                e.stopPropagation()
-                onClick()
-              })
-              return btn
-            }
-
-            const fileIcon = '<path d="M7 1v9M3.5 6.5L7 10l3.5-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10.5v1.5h10v-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-            const folderIcon = '<path d="M1.5 3.5h4l1.5 2h5.5v7h-11z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 8v3M6.5 9.5H3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-
-            const firstChild = menu.firstChild
-            menu.insertBefore(makeItem('上传文件夹', folderIcon, () => _triggerFileInput(_folderInput)), firstChild)
-            menu.insertBefore(makeItem('上传文件', fileIcon, () => _triggerFileInput(_fileInput)), firstChild)
-            menu.insertBefore(separator, firstChild)
+              : node.querySelector?.(`.${_MENU_CLASS}`)
+            if (menu) _injectUploadItems(menu)
           }
         }
       })
