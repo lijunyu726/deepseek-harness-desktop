@@ -28,7 +28,7 @@ node_modules/          安装产物——绝不提交
 
 0. **（仅新克隆/重装依赖后）fork 覆盖层**：本项目消费 npm 发布的 rc.6 依赖，但本地 fork 的会话删除等特性需要从 DSH 大仓覆盖运行时文件。克隆后先 `npm install`，再（如大仓可用）构建大仓并执行 `DSH_MONOREPO=<大仓路径> npm run sync:monorepo`；没有大仓时应用仍可构建运行，只是缺 fork 特性。已迁移的本机 node_modules 已含覆盖层，日常构建跳过此步。
 1. `npm run vision:prepare` —— 给 rc.6 依赖打视觉桥补丁（可重建、拒绝未知版本）；
-2. `npm run pack:plugin` —— 把 `packages/dsh-desktop/lib/*` 打进 tgz 并刷新 `node_modules/@deepseek-ai/dsh-desktop`（**改插件代码后必须重跑**，否则应用里跑的是旧包）；
+2. `npm run pack:plugin` —— 先对 `packages/dsh-desktop/lib/*.js` 执行强制语法预检，再把插件打进 tgz 并刷新 `node_modules/@deepseek-ai/dsh-desktop`（**改插件代码后必须重跑**，否则应用里跑的是旧包）；
 3. `node scripts/ensure-peer-deps.mjs` —— 把全部 peer 依赖钉进 `package.json`（electron-builder 会裁掉 peer 依赖，漏掉会导致别的电脑启动即崩）；
 4. `npm run dist` —— 打 arm64 DMG+zip（未签名，首次打开用右键→打开）。
 

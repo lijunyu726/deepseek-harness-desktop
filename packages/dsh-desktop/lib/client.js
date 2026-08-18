@@ -1361,21 +1361,18 @@ window.__ModuleLoader__.load({
     // mobile use the same data and preserve input-machine invariants.
 
     const PROMPT_HISTORY_CSS = [
-      // Bare timeline rail: ticks only, no pill shell. z-index stays below
-      // the shell's overlay layer (settings panel = 1000), so the rail never
-      // floats above settings or other panels.
-      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 2px 0; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
+      // Codex-style bare timeline: a fixed-width hit lane containing fine,
+      // left-anchored strokes. Only the stroke pseudo-element scales, keeping
+      // every target easy to hit without making the line visually thicker.
+      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: flex-start; width: 30px; padding: 2px 0; background: none; border: none; max-height: min(56vh, 480px) !important; overflow-y: auto !important; overflow-x: hidden !important; scrollbar-width: none; }',
       '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
-      // Visual bar 10x2.5px; the padding gives every tick a generous
-      // invisible hit area (~14x12.5px) so selection doesn't need pixel aim.
-      '.dsh-prompt-rail-tick { display: block; box-sizing: border-box; width: 14px; height: 2px; background-color: rgba(190,200,220,0.4); border-radius: 999px; cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.16s ease, opacity 0.16s ease; }',
-      '.dsh-prompt-rail-tick:hover { background-color: rgba(255,255,255,0.95); }',
-      '.dsh-prompt-rail-pop { position: fixed; z-index: 13; width: min(340px, calc(100vw - 90px)); max-height: 260px; display: flex; flex-direction: column; border: 1px solid rgba(128,140,160,0.34); border-radius: 10px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 36px rgba(0,0,0,0.5); backdrop-filter: blur(16px); animation: dsh-prompt-rail-pop-in 0.14s ease-out; }',
-      '.dsh-prompt-rail-pop::before { content: ""; position: absolute; left: -6px; top: 16px; width: 12px; height: 12px; background: rgba(18,21,30,0.97); border-left: 1px solid rgba(128,140,160,0.34); border-bottom: 1px solid rgba(128,140,160,0.34); transform: rotate(45deg); }',
-      '@keyframes dsh-prompt-rail-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }',
-      '.dsh-prompt-rail-pop-head { display: flex; justify-content: space-between; gap: 10px; padding: 9px 12px 7px; border-bottom: 1px solid rgba(128,140,160,0.16); font-size: 10.5px; color: rgba(220,225,238,0.6); }',
-      '.dsh-prompt-rail-pop-text { overflow: auto; padding: 9px 12px 11px; font-size: 12px; line-height: 1.55; color: rgba(243,245,250,0.94); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }',
-      '@media (max-width:700px) { .dsh-prompt-rail { padding: 2px 0; } .dsh-prompt-rail-tick { width: 12px; height: 11px; padding: 4px 2px; } }',
+      '.dsh-prompt-rail-tick { --dsh-prompt-scale: 1; --dsh-prompt-opacity: .34; appearance: none; display: block; position: relative; flex: 0 0 8px; width: 30px; height: 8px; margin: 0; padding: 0; border: 0; outline: 0; background: transparent; color: inherit; cursor: pointer; }',
+      '.dsh-prompt-rail-tick::before { content: ""; position: absolute; left: 0; top: 50%; width: 6px; height: 1px; border-radius: 999px; background: rgba(192,197,205,.88); opacity: var(--dsh-prompt-opacity); transform: translateY(-50%) scaleX(var(--dsh-prompt-scale)); transform-origin: left center; transition: transform 90ms cubic-bezier(.2,.8,.2,1), opacity 90ms ease, background-color 90ms ease; }',
+      '.dsh-prompt-rail-tick:hover::before,.dsh-prompt-rail-tick:focus-visible::before { background: rgba(231,234,239,.96); }',
+      '.dsh-prompt-rail-pop { position: fixed; z-index: 13; width: min(323px, calc(100vw - 86px)); box-sizing: border-box; padding: 9px 11px 10px; border: 0; border-radius: 12px; background: rgba(48,48,50,.97); box-shadow: 0 8px 24px rgba(0,0,0,.28); color: rgba(239,239,241,.94); pointer-events: none; animation: dsh-prompt-rail-pop-in 90ms ease-out; }',
+      '@keyframes dsh-prompt-rail-pop-in { from { opacity: 0; } to { opacity: 1; } }',
+      '.dsh-prompt-rail-pop-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 13px; line-height: 20px; font-weight: 400; }',
+      '@media (max-width:700px) { .dsh-prompt-rail { width: 28px; } .dsh-prompt-rail-tick { width: 28px; } .dsh-prompt-rail-pop { width: min(300px, calc(100vw - 76px)); } }',
     ].join('\n')
 
     let promptHistoryStyleInstalled = false
@@ -1408,7 +1405,7 @@ window.__ModuleLoader__.load({
       const inputRef = react.useRef(input)
       const leaveTimerRef = react.useRef(null)
       const railRef = react.useRef(null)
-      const measureRef = react.useRef({ firstTop: 0, step: 9.5 })
+      const measureRef = react.useRef({ firstTop: 0, step: 8 })
       itemsRef.current = items
       inputRef.current = input
 
@@ -1431,7 +1428,7 @@ window.__ModuleLoader__.load({
         const ticks = rail.querySelectorAll('.dsh-prompt-rail-tick')
         if (ticks.length === 0) return
         const first = ticks[0].getBoundingClientRect()
-        let step = 9.5
+        let step = 8
         if (ticks.length > 1) step = ticks[1].getBoundingClientRect().top - first.top
         measureRef.current = { firstTop: first.top + first.height / 2, step }
       }, [])
@@ -1447,9 +1444,9 @@ window.__ModuleLoader__.load({
       }, [measureTicks])
 
       const load = react.useCallback(() => gateway.promptHistory(100).then((result) => {
-        const next = result && result.ok && Array.isArray(result.items) ? result.items : []
-        // Reverse so newest is at the bottom (bottom-to-top order).
-        next.reverse()
+        const next = result && result.ok && Array.isArray(result.items) ? [...result.items].reverse() : []
+        // The timeline reads chronologically from top to bottom, with the
+        // newest accepted prompt at the bottom like Codex.
         setItems(next)
         itemsRef.current = next
         return next
@@ -1472,11 +1469,11 @@ window.__ModuleLoader__.load({
           const cardRect = composer.getBoundingClientRect()
           if (cardRect.width === 0) return
           let el = composer.parentElement
-          let left = cardRect.left - 24
+          let left = cardRect.left - 30
           while (el) {
             const r = el.getBoundingClientRect()
             if (r.width > cardRect.width + 300 && r.left > 0) {
-              left = r.left + 6
+              left = r.left + 16
               break
             }
             el = el.parentElement
@@ -1524,9 +1521,9 @@ window.__ModuleLoader__.load({
         transform: 'translateY(-50%)',
       }
       const measure = measureRef.current
-      // Continuous fisheye: the nearest tick to the cursor is the active one,
-      // and every tick scales by its PIXEL distance from the cursor (clamped
-      // at the default length, so far ticks never shrink below normal).
+      // Continuous Codex fisheye: only horizontal length changes. Every line
+      // stays 1px thick and left-anchored while nearby lines form a smooth
+      // Gaussian fan around the cursor.
       let hovered = null
       if (mouseY !== null && items.length > 0) {
         let bestDistance = Infinity
@@ -1540,20 +1537,22 @@ window.__ModuleLoader__.load({
         }
       }
       const popStyle = hovered === null ? null : {
-        left: Math.min(paneLeft + 26, window.innerWidth - 356),
-        top: Math.min(Math.max(measure.firstTop + hovered * measure.step - 26, 70), Math.max(70, window.innerHeight - 300)),
+        left: Math.min(paneLeft + 36, window.innerWidth - 337),
+        top: Math.min(Math.max(measure.firstTop + hovered * measure.step, 62), Math.max(62, window.innerHeight - 62)),
+        transform: 'translateY(-50%)',
       }
       const entry = hovered !== null ? items[hovered] : null
       const tickStyle = (index) => {
         if (mouseY === null) return null
         const distance = Math.abs(measure.firstTop + index * measure.step - mouseY)
-        const sigma = 30
+        const sigma = 18
         const gaussian = Math.exp(-(distance * distance) / (2 * sigma * sigma))
-        const scaleX = 1 + 0.3 * gaussian  // slight horizontal grow
-        const scaleY = 1 + 4 * gaussian    // 1.0 (far) → 5.0 (hovered) — thicken vertically
-        const opacity = 0.35 + 0.65 * gaussian
-        return { transform: `scale(${scaleX}, ${scaleY})`, opacity }
-      }
+        const scale = 1 + 3.35 * gaussian
+        const opacity = 0.34 + 0.62 * gaussian
+        return {
+          '--dsh-prompt-scale': scale.toFixed(3),
+          '--dsh-prompt-opacity': opacity.toFixed(3),
+        }
       }
       return react.createElement(
         react.Fragment,
@@ -1575,11 +1574,13 @@ window.__ModuleLoader__.load({
             onMouseLeave: scheduleLeave,
             onScroll: measureTicks,
           },
-          items.map((item, index) => react.createElement('span', {
+          items.map((item, index) => react.createElement('button', {
             key: index,
+            type: 'button',
             className: 'dsh-prompt-rail-tick',
             role: 'option',
             'aria-selected': index === hovered,
+            'aria-label': `历史 Prompt ${index + 1}`,
             style: tickStyle(index),
             onClick: () => applyEntry(index),
           })),
@@ -1590,15 +1591,8 @@ window.__ModuleLoader__.load({
             className: 'dsh-prompt-rail-pop',
             style: popStyle,
             role: 'tooltip',
-            onMouseEnter: cancelLeave,
-            onMouseLeave: scheduleLeave,
+            title: entry.text,
           },
-          react.createElement(
-            'div',
-            { className: 'dsh-prompt-rail-pop-head' },
-            react.createElement('span', null, `历史 Prompt · ${hovered + 1}/${items.length}`),
-            react.createElement('span', null, entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN') : ''),
-          ),
           react.createElement('div', { className: 'dsh-prompt-rail-pop-text' }, entry.text),
         ),
       )

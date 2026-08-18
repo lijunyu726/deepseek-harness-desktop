@@ -3,8 +3,8 @@
  * installed copy under node_modules/@deepseek-ai/dsh-desktop so
  * electron-builder ships the current lib/ code. Run before every build.
  */
-import { execSync } from 'node:child_process'
-import { existsSync, renameSync, rmSync } from 'node:fs'
+import { execFileSync, execSync } from 'node:child_process'
+import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -14,6 +14,15 @@ const scopedDir = path.join(root, 'node_modules', '@deepseek-ai')
 const target = path.join(scopedDir, 'dsh-desktop')
 const extracted = path.join(scopedDir, 'package')
 const tarball = path.join(pkgDir, 'deepseek-ai-dsh-desktop-0.1.0.tgz')
+const libDir = path.join(pkgDir, 'lib')
+
+// A browser bundle with a syntax error downloads successfully but never calls
+// __ModuleLoader__.load(), which the shell reports as "loaded without
+// registering". Refuse to pack such a bundle so a broken DMG cannot be built.
+for (const name of readdirSync(libDir).filter((entry) => entry.endsWith('.js')).sort()) {
+  execFileSync(process.execPath, ['--check', path.join(libDir, name)], { stdio: 'inherit' })
+}
+console.log('[pack-plugin] JavaScript syntax preflight passed')
 
 execSync('npm pack --pack-destination .', { cwd: pkgDir, stdio: 'inherit' })
 if (!existsSync(tarball)) throw new Error(`pack produced no tarball at ${tarball}`)

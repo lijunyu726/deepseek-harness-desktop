@@ -26,7 +26,7 @@ Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测
 
 ### 历史 Prompt
 
-宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘（抽屉右侧，Codex 式，由 composer 卡片的宽祖先元素测得 pane 左缘）的裸刻度时间轴（无胶囊外壳）：每条 Prompt 一根刻度（最新在最上），可视横条 10×2.5px、外层 padding 构成 14×12.5px 的隐形点击区（`background-clip: content-box`），好点中但视觉依旧纤细。鱼眼扩散是**连续的**：轨道 `mousemove` 持续上报鼠标 Y，每根刻度按自身中心与光标的**像素距离**计算缩放（峰值 1.5 倍、0.02/px 线性衰减成 ±2~3 根的对称圆顶、**下限钳在 1.0**——远离光标的刻度永远不比默认短），配合 `cubic-bezier(0.22,1,0.36,1)` 过渡形成 Dock 式丝滑跟随；刻度几何（首根中心 + 间距）在挂载/条目变化/滚动/窗口缩放时重测。悬停时右侧弹出预览气泡（跟随最近刻度），点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层（1000），打开面板时不会压在其上。桌面与手机连接同一服务，因此天然共享历史。
+宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘、抽屉右侧的 Codex 同构裸时间轴：历史在渲染前反转为最旧在上、最新在下；每项拥有 30×8px 稳定命中区，`::before` 绘制左端对齐的 6×1px 横线。轨道 `mousemove` 持续上报鼠标 Y，每根横线按自身中心与光标的像素距离计算高斯值（σ=18），仅通过 CSS 自定义属性把 `scaleX` 从 1 放大至约 4.35，线宽峰值约 26px且厚度始终为 1px；几何在挂载、条目变化、滚动和窗口缩放时重测。悬停气泡与最近横线垂直居中，只渲染最多四行 Prompt 正文，无标题、日期、序号、箭头和描边；点击仍通过标准 `inputActions.setDraft()` 恢复文本，没有旁路输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层。桌面与手机连接同一服务，因此天然共享历史。
 
 ### 局域网可信名单自愈
 
