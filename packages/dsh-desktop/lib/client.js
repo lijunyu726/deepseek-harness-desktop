@@ -1731,6 +1731,7 @@ window.__ModuleLoader__.load({
       const [current, setCurrent] = react.useState(null)
       const [busy, setBusy] = react.useState(false)
       const [dragging, setDragging] = react.useState(false)
+      const draggingRef = react.useRef(false)
       const [expanded, setExpanded] = react.useState(false)
       // One popover, two layers: the slider by default; the 高级 accordion
       // (supplier → model → effort) on top of it.
@@ -1951,14 +1952,18 @@ window.__ModuleLoader__.load({
         } catch {
           /* pointer capture is best-effort */
         }
+        draggingRef.current = true
         setDragging(true)
         select(stopFromEvent(e.clientX))
       }
       const onPointerMove = (e) => {
-        if (!dragging) return
+        if (!draggingRef.current) return
         select(stopFromEvent(e.clientX))
       }
-      const onPointerUp = () => setDragging(false)
+      const onPointerUp = () => {
+        draggingRef.current = false
+        setDragging(false)
+      }
 
       const noStops = stops.length === 0
       if (noStops && current === null) return null
