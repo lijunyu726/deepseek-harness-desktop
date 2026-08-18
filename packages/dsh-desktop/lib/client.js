@@ -1364,16 +1364,16 @@ window.__ModuleLoader__.load({
       // Bare timeline rail: ticks only, no pill shell. z-index stays below
       // the shell's overlay layer (settings panel = 1000), so the rail never
       // floats above settings or other panels.
-      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 4px 6px; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
+      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 3px; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
       '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
-      '.dsh-prompt-rail-tick { display: block; width: 22px; height: 3px; border-radius: 999px; background: rgba(190,200,220,0.4); cursor: pointer; transition: transform 0.16s ease, background 0.16s ease, opacity 0.16s ease; }',
-      '.dsh-prompt-rail-tick:hover { background: rgba(255,255,255,0.95); box-shadow: 0 0 8px rgba(120,160,255,0.9); }',
+      '.dsh-prompt-rail-tick { display: block; width: 6px; height: 1.5px; border-radius: 999px; background: rgba(190,200,220,0.35); cursor: pointer; transition: transform 0.16s ease, background 0.16s ease, opacity 0.16s ease; }',
+      '.dsh-prompt-rail-tick:hover { background: rgba(255,255,255,0.95); box-shadow: 0 0 6px rgba(120,160,255,0.8); }',
       '.dsh-prompt-rail-pop { position: fixed; z-index: 13; width: min(340px, calc(100vw - 90px)); max-height: 260px; display: flex; flex-direction: column; border: 1px solid rgba(128,140,160,0.34); border-radius: 10px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 36px rgba(0,0,0,0.5); backdrop-filter: blur(16px); animation: dsh-prompt-rail-pop-in 0.14s ease-out; }',
       '.dsh-prompt-rail-pop::before { content: ""; position: absolute; left: -6px; top: 16px; width: 12px; height: 12px; background: rgba(18,21,30,0.97); border-left: 1px solid rgba(128,140,160,0.34); border-bottom: 1px solid rgba(128,140,160,0.34); transform: rotate(45deg); }',
       '@keyframes dsh-prompt-rail-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }',
       '.dsh-prompt-rail-pop-head { display: flex; justify-content: space-between; gap: 10px; padding: 9px 12px 7px; border-bottom: 1px solid rgba(128,140,160,0.16); font-size: 10.5px; color: rgba(220,225,238,0.6); }',
       '.dsh-prompt-rail-pop-text { overflow: auto; padding: 9px 12px 11px; font-size: 12px; line-height: 1.55; color: rgba(243,245,250,0.94); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }',
-      '@media (max-width:700px) { .dsh-prompt-rail { gap: 6px; padding: 2px 3px; } .dsh-prompt-rail-tick { width: 16px; height: 2.5px; } }',
+      '@media (max-width:700px) { .dsh-prompt-rail { gap: 6px; padding: 2px 2px; } .dsh-prompt-rail-tick { width: 5px; height: 1.5px; } }',
     ].join('\n')
 
     let promptHistoryStyleInstalled = false
@@ -1402,6 +1402,7 @@ window.__ModuleLoader__.load({
       const [items, setItems] = react.useState([])
       const [hovered, setHovered] = react.useState(null)
       const [popAnchor, setPopAnchor] = react.useState(null)
+      const [paneLeft, setPaneLeft] = react.useState(null)
       const itemsRef = react.useRef(items)
       const inputRef = react.useRef(input)
       const leaveTimerRef = react.useRef(null)
@@ -1425,6 +1426,37 @@ window.__ModuleLoader__.load({
         window.addEventListener('dsh-desktop:agent-idle', onTaskDone)
         return () => window.removeEventListener('dsh-desktop:agent-idle', onTaskDone)
       }, [load])
+
+      // Pin the rail to the conversation page's left edge (right after the
+      // drawer, Codex-style) — not over the drawer and not against the
+      // composer. The pane is the composer card's wide ancestor.
+      react.useEffect(() => {
+        const place = () => {
+          const composer = document.querySelector('[data-composer-card]')
+          if (!(composer instanceof HTMLElement)) return
+          const cardRect = composer.getBoundingClientRect()
+          if (cardRect.width === 0) return
+          let el = composer.parentElement
+          let left = cardRect.left - 24
+          while (el) {
+            const r = el.getBoundingClientRect()
+            if (r.width > cardRect.width + 300 && r.left > 0) {
+              left = r.left + 6
+              break
+            }
+            el = el.parentElement
+          }
+          setPaneLeft(left)
+        }
+        place()
+        window.addEventListener('resize', place)
+        const observer = new ResizeObserver(() => place())
+        observer.observe(document.body)
+        return () => {
+          window.removeEventListener('resize', place)
+          observer.disconnect()
+        }
+      }, [])
 
       const applyEntry = react.useCallback((index) => {
         if (inputRef.current?.phase !== 'plain') return
@@ -1452,22 +1484,22 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      if (items.length === 0) return null
+      if (items.length === 0 || paneLeft === null) return null
       const railStyle = {
-        left: 10, // far-left of the window, away from the composer
+        left: paneLeft,
         top: '50%',
         transform: 'translateY(-50%)',
       }
       const popStyle = popAnchor === null ? null : {
-        left: 66,
+        left: Math.min(paneLeft + 26, window.innerWidth - 356),
         top: Math.min(Math.max(popAnchor.top - 26, 70), Math.max(70, window.innerHeight - 300)),
       }
       const entry = hovered !== null ? items[hovered] : null
       const tickStyle = (index) => {
         if (hovered === null) return null
         const distance = Math.abs(index - hovered)
-        const scale = distance === 0 ? 1.45 : Math.max(0.5, 1.05 - 0.16 * distance)
-        const opacity = distance === 0 ? 1 : Math.max(0.3, 0.9 - 0.13 * distance)
+        const scale = distance === 0 ? 1.6 : Math.max(0.45, 1 - 0.17 * distance)
+        const opacity = distance === 0 ? 1 : Math.max(0.3, 0.85 - 0.13 * distance)
         return { transform: `scaleX(${scale})`, opacity }
       }
       return react.createElement(
@@ -1543,9 +1575,9 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-trigger-effort { color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; }',
       '.dsh-rheo-chevron { display: inline-flex; color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; transition: transform 0.12s; }',
       '.dsh-rheo-chevron.open { transform: rotate(180deg); }',
-      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 10px 6px; border: 1px solid rgba(128,140,160,0.34); border-radius: 16px; background: rgba(20,23,32,0.98); box-shadow: 0 16px 44px rgba(0,0,0,0.5); backdrop-filter: blur(18px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
+      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 10px 6px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(46,50,64,0.92); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
       '@keyframes dsh-rheo-pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }',
-      '.dsh-rheo-sea { position: relative; height: 64px; }',
+      '.dsh-rheo-sea { position: relative; height: 66px; }',
       '.dsh-rheostat-track { position: absolute; left: 0; right: 0; bottom: 0; height: 32px !important; min-height: 32px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
       '.dsh-rheostat-track:hover { border-color: rgba(130,162,255,0.5); box-shadow: 0 0 0 3px rgba(77,107,254,0.09); }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
@@ -1557,8 +1589,8 @@ window.__ModuleLoader__.load({
       '.dsh-rheostat-dots { position: absolute; inset: 0; z-index: 2; pointer-events: none; }',
       '.dsh-rheostat-dot { position: absolute; top: 50%; width: 5px; height: 5px; margin-left: -2.5px; transform: translateY(-50%); border-radius: 50%; background: rgba(255,255,255,0.26); transition: background 0.25s ease, box-shadow 0.25s ease; }',
       '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
-      '.dsh-rheostat-label { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 10.5px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.97); background: rgba(12,16,26,0.62); border: 1px solid rgba(255,255,255,0.09); padding: 3px 7px; border-radius: 999px; pointer-events: none; z-index: 4; }',
-      '.dsh-rheostat-whale { position: absolute; top: 0; width: 40px !important; height: 30px !important; z-index: 3; pointer-events: none; transform: translateX(-50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 6px rgba(122,172,255,0.4)); }',
+      '.dsh-rheostat-label { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 10.5px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.97); background: rgba(36,40,54,0.72); border: 1px solid rgba(255,255,255,0.12); padding: 3px 7px; border-radius: 999px; pointer-events: none; z-index: 4; }',
+      '.dsh-rheostat-whale { position: absolute; top: 0; width: 56px !important; height: 42px !important; z-index: 3; pointer-events: none; transform: translateX(-50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
       '.dsh-rheostat-whale-inner { position: absolute; inset: 0; animation: dsh-whale-state-in 0.18s ease-out both; }',
       '.dsh-rheostat-whale-bob { position: absolute; inset: 0; animation: dsh-whale-bob var(--sprite-duration, 2.4s) ease-in-out infinite; }',
       '.dsh-rheostat-whale-frame { position: absolute; inset: 0; display: block; background-repeat: no-repeat; background-size: 600% 400%; background-position: 0% 0%; animation: dsh-whale-sprite var(--sprite-duration, 2.4s) step-end infinite; }',
@@ -1773,7 +1805,7 @@ window.__ModuleLoader__.load({
       const stop = stops[idx]
       const shortName = `${stop.modelLabel} · ${stop.effortName}`
       const title = `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
-      const THUMB = 20 // half of the whale width, keeps the swimmer above the track
+      const THUMB = 28 // half of the whale width, keeps the swimmer above the track
       const fillStyle = {
         width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
         background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
