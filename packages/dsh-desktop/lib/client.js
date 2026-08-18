@@ -1621,8 +1621,8 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-chevron.open { transform: rotate(180deg); }',
       '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 10px 6px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(46,50,64,0.92); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
       '@keyframes dsh-rheo-pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }',
-      '.dsh-rheo-sea { position: relative; height: 48px; }',
-      '.dsh-rheostat-track { position: absolute; left: 0; right: 0; bottom: 0; height: 36px !important; min-height: 36px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
+      '.dsh-rheo-sea { position: relative; height: 40px; }',
+      '.dsh-rheostat-track { position: absolute; left: 0; right: 0; bottom: 0; height: 40px !important; min-height: 40px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
       '.dsh-rheostat-track:hover { border-color: rgba(130,162,255,0.5); box-shadow: 0 0 0 3px rgba(77,107,254,0.09); }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
       '.dsh-rheostat-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; overflow: hidden !important; transition: width 0.22s ease, background 0.3s ease; }',
@@ -1630,15 +1630,15 @@ window.__ModuleLoader__.load({
       '@keyframes dsh-rheostat-shine { 0% { background-position: 130% 0; } 55%, 100% { background-position: -70% 0; } }',
       '.dsh-rheostat-particle { position: absolute; bottom: 3px; border-radius: 50%; background: rgba(255,255,255,0.92); box-shadow: 0 0 6px rgba(140,180,255,0.9); opacity: 0; pointer-events: none; animation: dsh-particle-rise 2.2s linear infinite; }',
       '@keyframes dsh-particle-rise { 0% { transform: translateY(0) scale(1); opacity: 0; } 12% { opacity: 0.95; } 80% { opacity: 0.45; } 100% { transform: translateY(-18px) scale(0.35); opacity: 0; } }',
-      // Level dots sit in their own row ABOVE the track, clear of the whale
-      // thumb that now lives inside the track.
-      '.dsh-rheostat-dots { position: absolute; left: 0; right: 0; top: 0; height: 10px; z-index: 2; pointer-events: none; }',
-      '.dsh-rheostat-dot { position: absolute; top: 50%; width: 5px; height: 5px; margin-left: -2.5px; transform: translateY(-50%); border-radius: 50%; background: rgba(255,255,255,0.26); transition: background 0.25s ease, box-shadow 0.25s ease; }',
+      // Level dots hug the BOTTOM edge inside the track, below the whale
+      // thumb's visible body (sprite transparent margins keep them clear).
+      '.dsh-rheostat-dots { position: absolute; left: 0; right: 0; bottom: 1px; height: 5px; z-index: 2; pointer-events: none; }',
+      '.dsh-rheostat-dot { position: absolute; bottom: 0; top: auto; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: rgba(255,255,255,0.3); transition: background 0.25s ease, box-shadow 0.25s ease; }',
       '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
       '.dsh-rheostat-label { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 10.5px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.97); background: rgba(36,40,54,0.72); border: 1px solid rgba(255,255,255,0.12); padding: 3px 7px; border-radius: 999px; pointer-events: none; z-index: 4; }',
       // The whale IS the thumb: it sits inside the track at the current stop
       // and can be grabbed and dragged to switch stops.
-      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 44px !important; height: 33px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
+      '.dsh-rheostat-whale { position: absolute; top: 46%; width: 44px !important; height: 33px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
       '.dsh-rheostat-whale.dragging { cursor: grabbing; }',
       '.dsh-rheostat-whale-inner { position: absolute; inset: 0; animation: dsh-whale-state-in 0.18s ease-out both; }',
       '.dsh-rheostat-whale-bob { position: absolute; inset: 0; animation: dsh-whale-bob var(--sprite-duration, 2.4s) ease-in-out infinite; }',
@@ -1910,7 +1910,7 @@ window.__ModuleLoader__.load({
               {
                 ref: trackRef,
                 className: locked ? 'dsh-rheostat-track dsh-rheostat-locked' : 'dsh-rheostat-track',
-                style: { height: 36, minHeight: 36 },
+                style: { height: 40, minHeight: 40 },
                 onPointerDown,
                 onPointerMove,
                 onPointerUp,
