@@ -55,8 +55,16 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 - vision MCP 的 API Key 只存本机（`vision.config.json`，权限 600，接口不回传浏览器）；缺省回退到环境变量 / `$DSH_HOME/.credentials.yaml`。
 - 图片字节存于 `$DSH_HOME/attachments/v1/objects/<prefix>/<sha256>`；只有 agent 调用看图工具时才离开本机。
 
+## Persistent Bash 官方修复回植
+
+桌面端保持 DSH `0.1.0-rc.6` 主体，`scripts/apply-persistent-bash-fix.mjs` 在运行/打包前将官方 `a8dc6f9`（随 `rc.7` 发布）的两个协议修复应用到安装依赖：`dsh-terminal-bash` 的受控 `PROMPT_COMMAND` 在每次 prompt 前重新设定 `PS1`；`dsh-tool-bash-persistent` 不再写入或剥离私有提示符，初始化只关闭 echo，并以 terminal seam 的 `stdin_read` 原因处理无完成标记的部分输出。补丁使用唯一锚点、支持幂等检查，未知依赖结构直接失败；不会用帖子中的常量替换把消费者重新耦合到某一个终端后端。
+
+## Release 纯净度边界
+
+Electron `files` 白名单只允许 `main/`、`assets/`、根 `package.json` 和生产 `node_modules/` 进入 `.app`，排除仓库文档、构建/补丁脚本、本地 package 源码与 source map。`sanitize-runtime-build-paths.mjs` 只清理由 DeepSeek bundler 写入 `//#region \\0dsh-css:` 注释的开发机路径，并在继续打包前拒绝任何当前 HOME/项目根残留；`audit-release.mjs` 对最终 `.app` 检查顶层白名单、敏感配置/用户数据库文件名、本机路径和常见真实凭据格式。最终 DMG 仍需只读挂载复扫，脚本通过、安装包生成和 Release 上传是三个独立状态。
+
 ## 构建与回退
 
-- 构建链：`vision:prepare` → `pack:plugin`（tgz → node_modules）→ `ensure-peer-deps`（peer 依赖钉入 package.json，防止 electron-builder 裁剪导致外来电脑启动失败）→ electron-builder（arm64 DMG+zip，未签名）。
-- 校验：`npm run vision:check`、`node --check`、隔离 `DSH_HOME` 冷启动、外来路径冷启动。
+- 构建链：`bash:prepare` → `vision:prepare` → `pack:plugin`（tgz → node_modules）→ `sanitize:runtime` → `ensure-peer-deps`（peer 依赖钉入 package.json）→ electron-builder 运行时白名单（arm64 DMG+zip，未签名）→ `audit:release`。
+- 校验：`npm run bash:check`、`npm run vision:check`、`node --check`、`npm run benchmark:bash`（加载打包应用内模块的真实 PTY 时延）、`node scripts/verify-cold-start.mjs`（项目外副本、隔离 `DSH_HOME`/userData、服务与渲染器）、最终 `.app` 与 DMG 纯净度复扫。
 - 回退：插件代码回退后重跑 `pack:plugin` + `dist`；补丁异常时重装依赖重跑；运行时行为回退只需清桌面配置目录，数据不受影响。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "1.2.34",
+  "version": "1.2.35",
   "private": true,
   "description": "DeepSeek Harness desktop shell for macOS (Electron wrapper around the dsh web server)",
   "author": "DeepSeek",
@@ -8,14 +8,19 @@
   "main": "main/main.mjs",
   "scripts": {
     "sync:monorepo": "node scripts/sync-monorepo-overrides.mjs",
+    "bash:prepare": "node scripts/apply-persistent-bash-fix.mjs",
+    "bash:check": "node scripts/apply-persistent-bash-fix.mjs --check",
+    "benchmark:bash": "node scripts/benchmark-persistent-bash.mjs",
     "vision:prepare": "node scripts/apply-vision-bridge.mjs",
     "vision:check": "node scripts/apply-vision-bridge.mjs --check && node --check node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js",
     "pack:plugin": "node scripts/pack-plugin.mjs",
-    "start": "npm run vision:prepare && npm run pack:plugin && electron .",
-    "dev": "npm run vision:prepare && npm run pack:plugin && electron .",
+    "sanitize:runtime": "node scripts/sanitize-runtime-build-paths.mjs",
+    "audit:release": "node scripts/audit-release.mjs",
+    "start": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && electron .",
+    "dev": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && electron .",
     "icon": "node scripts/build-icon.mjs",
-    "dist": "npm run vision:prepare && npm run pack:plugin && node scripts/build-icon.mjs && electron-builder --mac",
-    "dist:dir": "npm run vision:prepare && npm run pack:plugin && node scripts/build-icon.mjs && electron-builder --dir",
+    "dist": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && npm run sanitize:runtime && node scripts/build-icon.mjs && electron-builder --mac && npm run audit:release",
+    "dist:dir": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && npm run sanitize:runtime && node scripts/build-icon.mjs && electron-builder --dir && npm run audit:release",
     "ensure:peers": "node scripts/ensure-peer-deps.mjs"
   },
   "dependencies": {

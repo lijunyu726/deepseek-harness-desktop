@@ -13,6 +13,15 @@ directories:
 
 npmRebuild: false
 
+# Ship runtime-only files. Repository docs, patch/build scripts, local package
+# sources and other development material must never ride inside a user DMG.
+files:
+  - main/**/*
+  - assets/**/*
+  - package.json
+  - node_modules/**/*
+  - "!node_modules/**/*.map"
+
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.png

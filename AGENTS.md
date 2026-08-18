@@ -27,16 +27,19 @@ node_modules/          安装产物——绝不提交
 ## 构建链（顺序不可乱）
 
 0. **（仅新克隆/重装依赖后）fork 覆盖层**：本项目消费 npm 发布的 rc.6 依赖，但本地 fork 的会话删除等特性需要从 DSH 大仓覆盖运行时文件。克隆后先 `npm install`，再（如大仓可用）构建大仓并执行 `DSH_MONOREPO=<大仓路径> npm run sync:monorepo`；没有大仓时应用仍可构建运行，只是缺 fork 特性。已迁移的本机 node_modules 已含覆盖层，日常构建跳过此步。
-1. `npm run vision:prepare` —— 给 rc.6 依赖打视觉桥补丁（可重建、拒绝未知版本）；
-2. `npm run pack:plugin` —— 先对 `packages/dsh-desktop/lib/*.js` 执行强制语法预检，再把插件打进 tgz 并刷新 `node_modules/@deepseek-ai/dsh-desktop`（**改插件代码后必须重跑**，否则应用里跑的是旧包）；
-3. `node scripts/ensure-peer-deps.mjs` —— 把全部 peer 依赖钉进 `package.json`（electron-builder 会裁掉 peer 依赖，漏掉会导致别的电脑启动即崩）；
-4. `npm run dist` —— 打 arm64 DMG+zip（未签名，首次打开用右键→打开）。
+1. `npm run bash:prepare` —— 将官方 rc.7 的 persistent Bash 快速结算修复精确回植到当前 rc.6 两个运行时文件（可重建、拒绝未知结构）；
+2. `npm run vision:prepare` —— 给 rc.6 依赖打视觉桥补丁（可重建、拒绝未知版本）；
+3. `npm run pack:plugin` —— 先对 `packages/dsh-desktop/lib/*.js` 执行强制语法预检，再把插件打进 tgz 并刷新 `node_modules/@deepseek-ai/dsh-desktop`（**改插件代码后必须重跑**，否则应用里跑的是旧包）；
+4. `npm run sanitize:runtime` —— 清理 DeepSeek 运行时 bundle 注释中的构建机绝对路径，并拒绝残留当前 HOME/项目根路径；
+5. `node scripts/ensure-peer-deps.mjs` —— 把全部 peer 依赖钉进 `package.json`（electron-builder 会裁掉 peer 依赖，漏掉会导致别的电脑启动即崩）；
+6. `npm run dist` —— 以运行时文件白名单打 arm64 DMG+zip，并自动运行 `audit:release`；审计未通过的产物不得上传（未签名，首次打开用右键→打开）。
 
-`npm start` / `npm run dev` 会自动跑 1+2。
+`npm start` / `npm run dev` 会自动跑 1+2+3。
 
 ## 关键实现约束（改代码前必读）
 
 - **zstd 解码必须留在子进程**：Electron 内置 Node 的 zstd 原生解码（同步/异步/流式）都会随机 SIGTRAP，任何「进程内解压」都是回归。用量扫描全部在 `assets/usage-scan.mjs` 子进程里，失败只丢刷新、不杀服务。
+- **Persistent Bash 修复必须覆盖协议两侧**：当前 rc.6 通过 `scripts/apply-persistent-bash-fix.mjs` 精确回植官方 `a8dc6f9`；不得按网帖只把 `CONTROLLED_PROMPT` 改成工具私有提示符。终端后端必须在 `PROMPT_COMMAND` 中重新设定受控 `PS1`，持久工具必须只执行 `stty -echo` 并以 `waitReason === "stdin_read"` 处理无结束标记回退。
 - **日志扫描是增量且不阻塞面板的**：会话日志是只追加的 zstd 帧流；扫描结果（mtime/size/frameEnd/按日用量）持久化在 `$DSH_HOME/desktop/usage-scan-cache.json`。用量 RPC 必须先返回缓存，再后台启动单飞增量扫描；不得重新让客户端等待 zstd 子进程。
 - **历史 Prompt 只在接受边界记录**：仅从根 agent 的 `agent/pre-step` claimed batch 记录 `source.kind === 'user'` 的文字，不监听 DOM 猜测发送、不记录草稿/系统注入/工具消息。历史只能写入 `$DSH_HOME/desktop/prompt-history.json`，上限 100 条、单条 64 KiB、权限 600；恢复草稿必须走 `inputActions.setDraft()`。
 - **路径自愈**：插件内所有定位 app 资源（usage-scan.mjs、vision-server.mjs 模板）都用「模块目录相对路径 + `process.execPath` 回退」双候选；`ensureVisionCommand` 会在启动时把 vision MCP 行的 `command` 从系统 `node` 改写为应用自带 Node（app 移动后自动重写）。**不要把绝对路径写死在插件里。**
@@ -49,15 +52,18 @@ node_modules/          安装产物——绝不提交
 
 ## 验证方式
 
-- 语法：`node --check packages/dsh-desktop/lib/*.js assets/*.mjs`；
+- 语法：`node --check packages/dsh-desktop/lib/*.js assets/*.mjs scripts/*.mjs`；
+- 依赖补丁：`npm run bash:check && npm run vision:check`；Bash 性能回归用 `npm run benchmark:bash`，它必须直接加载 `release/mac-arm64/DeepSeek Harness.app` 内的模块并通过真实 PTY 快速路径；
 - 隔离服务冒烟：复制 release 应用为 `TestApp.app`，用独立 `DSH_HOME` + `ELECTRON_RUN_AS_NODE=1` 启动（注意：插件必须由应用内 node_modules 解析，加载器不认 profile 里的软链指向的其它副本；补丁参数 `--expose-internals` 必须在 bin.js 之前）；
 - 浏览器交互：ego-browser（`useOrCreateTaskSpace` + 手机/桌面视口），测完 `completeTaskSpace`；
 - 打包产物核对：检查 `release/mac-arm64/…app/node_modules/@deepseek-ai/dsh-desktop/lib` 与新代码一致；
-- 外来电脑模拟：把 .app 复制到项目树之外的路径（无上游 node_modules 可借）冷启动，必须能起服务——这验证 peer 依赖补齐没有回归。
+- 外来电脑模拟：运行 `node scripts/verify-cold-start.mjs`；它会把 `.app` 复制到项目树之外，以隔离的 `DSH_HOME`/userData 冷启动并检查服务、渲染器及插件错误——这验证 peer 依赖补齐和插件加载没有回归。
+- 发布纯净度：`npm run audit:release`；同时挂载最终 DMG 复扫敏感文件名、真实密钥模式、用户数据目录和构建机绝对路径。
 
 ## 安全边界
 
 - 不得把 `$DSH_HOME` 下的任何真实数据（会话日志、投影缓存、凭据、vision.config.json）复制进仓库或构建产物；
+- 面向用户的 `.app` 只能包含 `main/`、`assets/`、`package.json` 与生产 `node_modules/`；项目文档、构建脚本、本地插件源码、source map 和本机绝对路径不得进入 DMG；
 - 不得放宽 dsh 的信任围栏/特权方法锁；
 - 提交前 `grep` 检查明文密钥（`sk-`、XIAOMI key 值）与本机路径；
 - 局域网访问开关默认关闭，且只面向用户可信网络。
@@ -65,6 +71,6 @@ node_modules/          安装产物——绝不提交
 ## 回退方法
 
 - 插件代码回退：改回 `packages/dsh-desktop/lib/*` → `npm run pack:plugin` → `npm run dist` 重打；
-- 依赖补丁回退：`scripts/apply-vision-bridge.mjs --check` 校验完整性；异常时用干净依赖重装后重跑；
+- 依赖补丁回退：`bash:check` / `vision:check` 校验完整性；异常时用干净依赖重装后按 bash → vision 顺序重跑；
 - 运行时回退：停掉桌面应用、删 `~/Library/Application Support/DeepSeek Harness` 里的桌面配置即可回到默认（不影响 ~/.dsh 数据）；
 - 应用移动后：新位置首次启动会自动重建插件软链、重写 vision 命令路径、重拍可信名单——无需手工清理。

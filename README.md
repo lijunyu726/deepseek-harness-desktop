@@ -56,6 +56,7 @@ npm run dev          # 以开发模式启动（服务直接跑在 electron 的 n
 - 服务子进程预加载 `main/child-guard.mjs` 监视所属 Electron 进程；桌面壳崩溃或被强杀后，服务会自行退出，避免遗留多套 `dsh web` 与 MCP 进程。用量页打开时先从 `$DSH_HOME/desktop/usage-scan-cache.json` 立即渲染，再由后台子进程增量扫描原始会话日志并静默更新，不再让面板等待 zstd 解码。Electron 内置 Node 的 zstd 原生解码存在随机 SIGTRAP（同步/异步/流式路径均复现过），因此所有解压都隔离在 `assets/usage-scan.mjs` 子进程中（崩溃不影响服务进程），并按文件 mtime+size+frameEnd 缓存，只重扫发生变化的日志。
 - 开发调试时如需与已安装实例共存，用 `DSH_USER_DATA_DIR=/tmp/dsh-uitest` 隔离开发实例的配置目录（锁、缓存、日志互不干扰）。
 - 修改 `packages/dsh-desktop/lib/` 后：`npm run pack:plugin`（先强制校验插件 JavaScript 语法，再打进 tarball 并刷新 node_modules 里的插件副本），然后 `npm run dist` 重新打包；每次 `dist` 也会自动跑这一步。
+- `npm run dist` 在打包前会应用官方 persistent Bash 快速结算修复、清理依赖构建注释中的本机绝对路径；打包后再执行 Release 纯净度审计。发现 `.env`、凭据/用户数据文件、真实密钥格式、本机路径或非运行时顶层文件时，构建以失败结束，不得上传产物。
 
 ## 旧版存档
 
@@ -69,16 +70,21 @@ DSH_MONOREPO=/path/to/deepseek-harness npm run sync:monorepo   # 可选：恢复
 npm run dist                                  # 打包
 ```
 
-> 本项目位于 `/Volumes/S690/codes/deepseek-harness-desktop`，独立 Git 仓库（私有 GitHub：lijunyu726/deepseek-harness-desktop）。没有 DSH 大仓时也能构建运行，只是缺会话删除等 fork 特性。
+> 本项目是独立 Git 仓库（私有 GitHub：lijunyu726/deepseek-harness-desktop）。没有 DSH 大仓时也能构建运行，只是缺会话删除等 fork 特性；构建和运行不依赖维护者机器上的绝对项目路径。
 
 ## 打包
 
 ```bash
 npm run dist          # 产出 release/DeepSeek Harness-<版本>-arm64.dmg 与 .zip（版本号来自 package.json）
 npm run dist:dir      # 只出 .app，不压 dmg（快速验证）
+npm run audit:release # 审计 .app 中的用户数据、凭据、密钥模式和构建机路径
+npm run benchmark:bash # 用打包 .app 内的真实 PTY 连跑 5 次命令，验证受控 Prompt 快速路径
+node scripts/verify-cold-start.mjs # 把 .app 复制到项目外，用隔离数据目录检查服务和渲染器
 ```
 
 `.app` 位于 `release/mac-arm64/DeepSeek Harness.app`。拖进「应用程序」即可。
+
+Electron 打包采用运行时白名单，只包含 `main/`、`assets/`、`package.json` 和生产 `node_modules/`；README、AGENTS、ARCHITECTURE、构建脚本、本地插件源码和 source map 不进入面向用户的应用包。
 
 ### 应用搬家与路径自愈
 
@@ -97,13 +103,19 @@ npm run dist:dir      # 只出 .app，不压 dmg（快速验证）
 - **x86_64**：`electron-builder.yml` 目前只出 arm64，Intel Mac 加 `x64` target 即可。
 - 桌面端与终端里的 `dsh web` 共用 `~/.dsh`，同时运行时两个实例会各自选端口；长期只保留桌面端即可。
 
+## Persistent Bash 命令提速修复
+
+本项目消费的 DSH `0.1.0-rc.6` 存在官方确认的提示符协议冲突：`dsh-tool-bash-persistent` 把 `PS1` 改成私有提示符，而 `dsh-terminal-bash` 仍等待自己的受控提示符，导致 macOS 上几乎每次命令都退化到 3.5 秒静默结算。DeepSeek 官方在 `a8dc6f9776d20d2e846e8373628ffd1a03808c84`（Fixes #2585，已进入 `0.1.0-rc.7`）中同时修复协议两侧：后端的 `PROMPT_COMMAND` 每次提示前重新设定受控 `PS1`，持久 Bash 工具不再覆盖/匹配私有 `PS1`，而是使用 `stdin_read` 结算信号。
+
+桌面端通过 `scripts/apply-persistent-bash-fix.mjs` 将这两个官方 `rc.7` 运行时变化逐字回植到当前 `rc.6`，避免整体升级 `rc.7` 同时触碰桌面端已有的图片桥、设置面、会话删除覆盖与六档模型选择。脚本只接受已知旧状态或官方已修复状态，可重复执行；`npm run bash:check` 校验补丁完整性，`npm run benchmark:bash` 则直接加载打包 `.app` 内的模块，用真实 PTY 将静默兜底推到 30 秒后连跑命令，确保结果来自受控 Prompt 快速路径。官方在 darwin 的基准为裸 send 从约 3540ms 降至约 86ms，工具调用从 7180/3560/3566ms 降至 355/88/91ms；本项目仍以本机打包应用的实际结果作为发布判据，不把官方数字冒充本机实测。
+
 ## DeepSeek 文本模型的图片桥接
 
 DeepSeek V4 的 chat-completions 路由是纯文本模型。官方文档中的 `input: [text, image]` 只用于声明一个自定义提供方的模型本身确实接受图片，不能把 DeepSeek V4 改造成视觉模型；错误声明会把原始图片发给 DeepSeek，并由提供方拒绝。
 
 桌面端因此在打包依赖上应用一层可重建的 MCP 委派桥接：当 GUI 消息含图片且当前模型只接受文本时，宿主先按 Harness 原生图片限制验证并保存文件，在持久消息中保留图片以供界面展示，同时附加包含不可变本地附件路径的工具指令。模型请求边界会移除图片块，所以 DeepSeek 只收到文字，并被明确要求调用 `mcp__vision__describe_image`；`vision` MCP 使用多模态模型读取该路径，把文字结果送回 DeepSeek 的正常工具循环。切换到文本模型时，只有每张历史图片都带有这种桥接指令才会放行；未桥接的原生视觉历史仍会被安全拒绝。原生支持图片的模型仍接收原始图片。
 
-桥接脚本是 `scripts/apply-vision-bridge.mjs`。`npm run dev`、`npm run dist` 和 `npm run dist:dir` 会先构建仓库、同步本地功能覆盖，再执行桥接；脚本可重复运行，并拒绝修改无法识别的依赖版本。`npm run vision:check` 检查补丁完整性和生成文件语法。发送请求的取消信号会传到图片准入阶段，因此前端取消后不会继续把消息加入队列。视觉模型的网络超时仍由 `vision` MCP 自己控制，工具失败会作为工具错误返回到本轮，而不是形成一个脱离会话的后台请求。
+桥接脚本是 `scripts/apply-vision-bridge.mjs`。`npm run dev`、`npm run dist` 和 `npm run dist:dir` 会先应用 persistent Bash 修复，再执行视觉桥与桌面插件打包；脚本可重复运行，并拒绝修改无法识别的依赖版本。`npm run vision:check` 检查补丁完整性和生成文件语法。发送请求的取消信号会传到图片准入阶段，因此前端取消后不会继续把消息加入队列。视觉模型的网络超时仍由 `vision` MCP 自己控制，工具失败会作为工具错误返回到本轮，而不是形成一个脱离会话的后台请求。
 
 `vision` MCP 必须挂载为服务名 `vision`，并暴露 `describe_image`。设置 → 扩展 → 看图工具可直接修改它的模型名、调用地址与 API Key（写入服务脚本旁的 `vision.config.json`，每次调用实时读取；首次保存会把服务脚本替换为随应用打包的配置读取模板 `assets/vision-server.mjs` 并重启该 MCP 行）。它按文件头而不是扩展名识别 PNG/JPEG/WebP/GIF，因为 Harness 的内容寻址附件文件没有扩展名。MCP 仍可用于模型主动读取用户给出的普通本地图片路径；GUI 拖放或粘贴图片会自动生成同一种工具调用路径。
 
