@@ -1364,11 +1364,11 @@ window.__ModuleLoader__.load({
       // Bare timeline rail: ticks only, no pill shell. z-index stays below
       // the shell's overlay layer (settings panel = 1000), so the rail never
       // floats above settings or other panels.
-      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 2px 0; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
+      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 2px 0; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
       '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
       // Visual bar 10x2.5px; the padding gives every tick a generous
       // invisible hit area (~14x12.5px) so selection doesn't need pixel aim.
-      '.dsh-prompt-rail-tick { display: block; box-sizing: border-box; width: 10px; height: 3px; background-color: rgba(190,200,220,0.4); border-radius: 999px; cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.16s ease, opacity 0.16s ease; }',
+      '.dsh-prompt-rail-tick { display: block; box-sizing: border-box; width: 2px; height: 14px; background-color: rgba(190,200,220,0.4); border-radius: 999px; cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.16s ease, opacity 0.16s ease; }',
       '.dsh-prompt-rail-tick:hover { background-color: rgba(255,255,255,0.95); }',
       '.dsh-prompt-rail-pop { position: fixed; z-index: 13; width: min(340px, calc(100vw - 90px)); max-height: 260px; display: flex; flex-direction: column; border: 1px solid rgba(128,140,160,0.34); border-radius: 10px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 36px rgba(0,0,0,0.5); backdrop-filter: blur(16px); animation: dsh-prompt-rail-pop-in 0.14s ease-out; }',
       '.dsh-prompt-rail-pop::before { content: ""; position: absolute; left: -6px; top: 16px; width: 12px; height: 12px; background: rgba(18,21,30,0.97); border-left: 1px solid rgba(128,140,160,0.34); border-bottom: 1px solid rgba(128,140,160,0.34); transform: rotate(45deg); }',
@@ -1547,13 +1547,13 @@ window.__ModuleLoader__.load({
       const tickStyle = (index) => {
         if (mouseY === null) return null
         const distance = Math.abs(measure.firstTop + index * measure.step - mouseY)
-        // Codex-style bell curve: selected item is 3.5x wide, neighbors
-        // fall off steeply (Gaussian-like: e^(-d²/σ²)).
-        const sigma = 40 // controls spread — smaller = tighter peak
+        // Codex-style bell curve: thin lines that bulge wider on hover.
+        const sigma = 30
         const gaussian = Math.exp(-(distance * distance) / (2 * sigma * sigma))
-        const scale = 1 + 2.5 * gaussian // 1.0 (far) → 3.5 (hovered)
-        const opacity = 0.4 + 0.6 * gaussian // 0.4 (far) → 1.0 (hovered)
-        return { transform: `scaleX(${scale})`, opacity }
+        const scaleX = 1 + 4 * gaussian   // 1.0 (far) → 5.0 (hovered)
+        const scaleY = 1 + 0.5 * gaussian  // slight vertical grow
+        const opacity = 0.35 + 0.65 * gaussian // 0.35 (far) → 1.0 (hovered)
+        return { transform: `scale(${scaleX}, ${scaleY})`, opacity }
       }
       return react.createElement(
         react.Fragment,
