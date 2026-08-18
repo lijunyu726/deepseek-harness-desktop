@@ -26,7 +26,7 @@ Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测
 
 ### 历史 Prompt
 
-宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘（抽屉右侧，Codex 式，由 composer 卡片的宽祖先元素测得 pane 左缘）的裸刻度时间轴（无胶囊外壳，刻度 6×1.5px）：每条 Prompt 一根刻度（最新在最上），悬停时整列按与悬停刻度的距离做鱼眼扩散缩放（当前 1.6 → 逐级递减），并在右侧弹出预览气泡，点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层（1000），打开面板时不会压在其上。桌面与手机连接同一服务，因此天然共享历史。
+宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘（抽屉右侧，Codex 式，由 composer 卡片的宽祖先元素测得 pane 左缘）的裸刻度时间轴（无胶囊外壳，刻度 6×1.5px）：每条 Prompt 一根刻度（最新在最上）。鱼眼扩散是**连续的**：轨道 `mousemove` 持续上报鼠标 Y，每根刻度按自身中心与光标的**像素距离**计算缩放（最近 1.6 倍、随距离线性衰减、**下限钳在 1.0**——远离光标的刻度永远不比默认短），配合 `cubic-bezier(0.22,1,0.36,1)` 过渡形成 Dock 式丝滑跟随；刻度几何（首根中心 + 间距）在挂载/条目变化/滚动/窗口缩放时重测。悬停时右侧弹出预览气泡（跟随最近刻度），点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层（1000），打开面板时不会压在其上。桌面与手机连接同一服务，因此天然共享历史。
 
 ### 局域网可信名单自愈
 

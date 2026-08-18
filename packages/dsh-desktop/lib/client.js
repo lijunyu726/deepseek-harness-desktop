@@ -1366,7 +1366,7 @@ window.__ModuleLoader__.load({
       // floats above settings or other panels.
       '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 3px; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
       '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
-      '.dsh-prompt-rail-tick { display: block; width: 6px; height: 1.5px; border-radius: 999px; background: rgba(190,200,220,0.35); cursor: pointer; transition: transform 0.16s ease, background 0.16s ease, opacity 0.16s ease; }',
+      '.dsh-prompt-rail-tick { display: block; width: 6px; height: 1.5px; border-radius: 999px; background: rgba(190,200,220,0.35); cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background 0.16s ease, opacity 0.16s ease, box-shadow 0.16s ease; }',
       '.dsh-prompt-rail-tick:hover { background: rgba(255,255,255,0.95); box-shadow: 0 0 6px rgba(120,160,255,0.8); }',
       '.dsh-prompt-rail-pop { position: fixed; z-index: 13; width: min(340px, calc(100vw - 90px)); max-height: 260px; display: flex; flex-direction: column; border: 1px solid rgba(128,140,160,0.34); border-radius: 10px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 36px rgba(0,0,0,0.5); backdrop-filter: blur(16px); animation: dsh-prompt-rail-pop-in 0.14s ease-out; }',
       '.dsh-prompt-rail-pop::before { content: ""; position: absolute; left: -6px; top: 16px; width: 12px; height: 12px; background: rgba(18,21,30,0.97); border-left: 1px solid rgba(128,140,160,0.34); border-bottom: 1px solid rgba(128,140,160,0.34); transform: rotate(45deg); }',
@@ -1400,18 +1400,43 @@ window.__ModuleLoader__.load({
     function PromptHistoryRail({ useInput, inputActions, gateway }) {
       const input = typeof useInput === 'function' ? useInput((state) => state) : null
       const [items, setItems] = react.useState([])
-      const [hovered, setHovered] = react.useState(null)
-      const [popAnchor, setPopAnchor] = react.useState(null)
+      const [mouseY, setMouseY] = react.useState(null)
       const [paneLeft, setPaneLeft] = react.useState(null)
       const itemsRef = react.useRef(items)
       const inputRef = react.useRef(input)
       const leaveTimerRef = react.useRef(null)
+      const railRef = react.useRef(null)
+      const measureRef = react.useRef({ firstTop: 0, step: 9.5 })
       itemsRef.current = items
       inputRef.current = input
 
       react.useEffect(() => {
         installPromptHistoryStyle()
       }, [])
+
+      // Measure tick geometry for the continuous fisheye: tick centers are
+      // computed arithmetically (scaleX never shifts Y, so one measurement
+      // per layout change is enough).
+      const measureTicks = react.useCallback(() => {
+        const rail = railRef.current
+        if (rail === null) return
+        const ticks = rail.querySelectorAll('.dsh-prompt-rail-tick')
+        if (ticks.length === 0) return
+        const first = ticks[0].getBoundingClientRect()
+        let step = 9.5
+        if (ticks.length > 1) step = ticks[1].getBoundingClientRect().top - first.top
+        measureRef.current = { firstTop: first.top + first.height / 2, step }
+      }, [])
+
+      react.useEffect(() => {
+        measureTicks()
+      }, [items.length, measureTicks])
+
+      react.useEffect(() => {
+        const onResize = () => measureTicks()
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
+      }, [measureTicks])
 
       const load = react.useCallback(() => gateway.promptHistory(100).then((result) => {
         const next = result && result.ok && Array.isArray(result.items) ? result.items : []
@@ -1464,16 +1489,14 @@ window.__ModuleLoader__.load({
         if (entry === undefined) return
         inputActions.setDraft(entry.text)
         focusComposerAtEnd()
-        setHovered(null)
-        setPopAnchor(null)
+        setMouseY(null)
       }, [inputActions])
 
       const scheduleLeave = react.useCallback(() => {
         if (leaveTimerRef.current !== null) clearTimeout(leaveTimerRef.current)
         leaveTimerRef.current = setTimeout(() => {
           leaveTimerRef.current = null
-          setHovered(null)
-          setPopAnchor(null)
+          setMouseY(null)
         }, 140)
       }, [])
 
@@ -1490,16 +1513,32 @@ window.__ModuleLoader__.load({
         top: '50%',
         transform: 'translateY(-50%)',
       }
-      const popStyle = popAnchor === null ? null : {
+      const measure = measureRef.current
+      // Continuous fisheye: the nearest tick to the cursor is the active one,
+      // and every tick scales by its PIXEL distance from the cursor (clamped
+      // at the default length, so far ticks never shrink below normal).
+      let hovered = null
+      if (mouseY !== null && items.length > 0) {
+        let bestDistance = Infinity
+        for (let i = 0; i < items.length; i++) {
+          const center = measure.firstTop + i * measure.step
+          const distance = Math.abs(center - mouseY)
+          if (distance < bestDistance) {
+            bestDistance = distance
+            hovered = i
+          }
+        }
+      }
+      const popStyle = hovered === null ? null : {
         left: Math.min(paneLeft + 26, window.innerWidth - 356),
-        top: Math.min(Math.max(popAnchor.top - 26, 70), Math.max(70, window.innerHeight - 300)),
+        top: Math.min(Math.max(measure.firstTop + hovered * measure.step - 26, 70), Math.max(70, window.innerHeight - 300)),
       }
       const entry = hovered !== null ? items[hovered] : null
       const tickStyle = (index) => {
-        if (hovered === null) return null
-        const distance = Math.abs(index - hovered)
-        const scale = distance === 0 ? 1.6 : Math.max(0.45, 1 - 0.17 * distance)
-        const opacity = distance === 0 ? 1 : Math.max(0.3, 0.85 - 0.13 * distance)
+        if (mouseY === null) return null
+        const distance = Math.abs(measure.firstTop + index * measure.step - mouseY)
+        const scale = Math.min(1.6, Math.max(1, 1.6 - distance * 0.05))
+        const opacity = Math.min(1, Math.max(0.5, 1 - distance * 0.015))
         return { transform: `scaleX(${scale})`, opacity }
       }
       return react.createElement(
@@ -1508,12 +1547,19 @@ window.__ModuleLoader__.load({
         react.createElement(
           'div',
           {
+            ref: railRef,
             className: 'dsh-prompt-rail',
             style: railStyle,
             role: 'listbox',
             'aria-label': '历史 Prompt 时间轴',
             title: '历史 Prompt：悬停预览 · 点击填入输入框',
+            onMouseEnter: cancelLeave,
+            onMouseMove: (event) => {
+              cancelLeave()
+              setMouseY(event.clientY)
+            },
             onMouseLeave: scheduleLeave,
+            onScroll: measureTicks,
           },
           items.map((item, index) => react.createElement('span', {
             key: index,
@@ -1521,12 +1567,6 @@ window.__ModuleLoader__.load({
             role: 'option',
             'aria-selected': index === hovered,
             style: tickStyle(index),
-            onMouseEnter: (event) => {
-              cancelLeave()
-              const rect = event.currentTarget.getBoundingClientRect()
-              setPopAnchor({ top: rect.top + rect.height / 2 })
-              setHovered(index)
-            },
             onClick: () => applyEntry(index),
           })),
         ),
