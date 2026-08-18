@@ -830,7 +830,7 @@ window.__ModuleLoader__.load({
           {
             style: {
               ...ROW, borderRadius: '10px', margin: '4px 0', padding: '10px 12px',
-              border: '1px solid rgba(77,107,254,0.35)', background: 'rgba(77,107,254,0.08)',
+              border: '1px solid rgba(128,140,160,0.3)', background: 'transparent',
             },
           },
           react.createElement('span', { style: ROW_LABEL },
@@ -871,7 +871,7 @@ window.__ModuleLoader__.load({
         ),
         cfg?.lanAccess === true && lan && lan.bound && react.createElement(
           'div',
-          { style: { display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px', borderRadius: '10px', border: '1px solid rgba(77,107,254,0.4)', background: 'rgba(77,107,254,0.06)' } },
+          { style: { display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px', borderRadius: '10px', border: '1px solid rgba(128,140,160,0.3)', background: 'transparent' } },
           react.createElement('div', { style: { fontSize: '12.5px', fontWeight: 600 } }, '手机访问'),
           lan.qr && react.createElement('img', {
             src: lan.qr, alt: '局域网访问二维码', width: 172, height: 172,
@@ -1619,7 +1619,7 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-trigger-effort { color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; }',
       '.dsh-rheo-chevron { display: inline-flex; color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; transition: transform 0.12s; }',
       '.dsh-rheo-chevron.open { transform: rotate(180deg); }',
-      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 12px 8px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(46,50,64,0.92); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
+      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 12px 8px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(18,21,30,0.97); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
       '@keyframes dsh-rheo-pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }',
       // 高级 accordion toggle (triangle rotates when expanded).
       '.dsh-rheo-adv-toggle { display: flex; align-items: center; gap: 6px; width: 100%; border: none; background: transparent; color: rgba(232,236,246,0.9); font: inherit; font-size: 12.5px; cursor: pointer; padding: 2px 6px 8px; text-align: left; }',
