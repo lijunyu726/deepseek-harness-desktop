@@ -34,7 +34,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 ### 鲸鱼思考强度变阻器
 
-接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：收起态渲染一个与 shell 默认模型芯片像素一致的触发器（只显示模型 + 档位 + 箭头，视觉上像没改过），点击后展开鲸鱼变阻器弹出层（锚定芯片右上方，点击外部或 Esc 收起）。**档位是自适应的**：当前会话模型是 DeepSeek（`deepseek-official`）时，保留 Flash·Off→High→Max→V4 Pro·Off→High→Max 的串联六档（显式状态表，不依赖模型接口返回顺序）；换成其他厂商模型时，改按该模型在目录里上报的 `reasoning.efforts` 动态生成档位（几个档就几档，圆点数量同步），拖动只调该模型的思考强度；无档位的模型只显示芯片（弹层提示“不支持推理档位调节”）。收起芯片永远显示**真实当前模型名 + 档位**（从目录回查，不再回退显示第一档）。选中即走 `session.selectModel` 官方通道（会话级状态，桌面/手机同流实时同步）。
+接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：收起态渲染一个与 shell 默认模型芯片像素一致的触发器（只显示模型 + 档位 + 箭头，视觉上像没改过），点击后展开鲸鱼变阻器弹出层（锚定芯片右上方，点击外部或 Esc 收起）。**档位是自适应的**：当前会话模型是 DeepSeek（`deepseek-official`）时，保留 Flash·Off→High→Max→V4 Pro·Off→High→Max 的串联六档（显式状态表，不依赖模型接口返回顺序）；换成其他厂商模型时，改按该模型在目录里上报的 `reasoning.efforts` 动态生成档位（几个档就几档，圆点数量同步），拖动只调该模型的思考强度；无档位的模型只显示芯片（弹层提示“不支持推理档位调节”）。收起芯片永远显示**真实当前模型名 + 档位**（从目录回查，不再回退显示第一档）。双形态可切换（Codex 式，偏好存 `desktop-config` 的 `modelMode`，桌面/手机共享）：正常=鲸鱼变阻器弹层，头部有「高级 >」入口与闪电图标；高级=两行设置菜单（模型/思考强度，值+右箭头）下方分隔线与「高级」分区、「鲸鱼变阻器」行切回，子页为模型/档位列表（选中打勾，品牌蓝）。选中即走 `session.selectModel` 官方通道（会话级状态，桌面/手机同流实时同步）。
 
 每档拥有独立的透明底 24 帧动画，运行时素材为 `lib/whale-sprites/*.webp` 下的 1056×512 无损 WebP（6×4 网格，单格 176×128）。宿主 `lib/whale-sprites.js` 在 `/dsh-desktop/whale-sprites/<state>.webp` 注册六个精确同源路由，浏览器端预加载后以 CSS `background-position` 播放；切档通过 React key 重启动画，系统开启“减少动态效果”时停在首帧。Flash 三档保持轻快，Pro 三档的动作语义更强，避免 Flash·Max 比 Pro 更努力。
 

@@ -1619,10 +1619,15 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-trigger-effort { color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; }',
       '.dsh-rheo-chevron { display: inline-flex; color: var(--dsw-alias-label-caption, rgba(220,225,238,0.6)); flex: none; transition: transform 0.12s; }',
       '.dsh-rheo-chevron.open { transform: rotate(180deg); }',
-      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 10px 6px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(46,50,64,0.92); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
+      '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 12px 8px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(46,50,64,0.92); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
       '@keyframes dsh-rheo-pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }',
+      // Codex-style panel header: "高级 >" entry on the left, bolt on the right.
+      '.dsh-rheo-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 10px; }',
+      '.dsh-rheo-head-link { display: inline-flex; align-items: center; gap: 3px; border: none; background: transparent; color: rgba(220,225,238,0.8); font: inherit; font-size: 12.5px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }',
+      '.dsh-rheo-head-link:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,140,160,0.16)); color: #fff; }',
+      '.dsh-rheo-bolt { display: inline-flex; color: rgba(220,225,238,0.65); }',
       '.dsh-rheo-sea { position: relative; height: 40px; }',
-      '.dsh-rheostat-track { position: absolute; left: 0; right: 0; bottom: 0; height: 40px !important; min-height: 40px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
+      '.dsh-rheostat-track { position: absolute; left: 0; right: 0; bottom: 0; height: 44px !important; min-height: 44px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
       '.dsh-rheostat-track:hover { border-color: rgba(130,162,255,0.5); box-shadow: 0 0 0 3px rgba(77,107,254,0.09); }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
       '.dsh-rheostat-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; overflow: hidden !important; transition: width 0.22s ease, background 0.3s ease; }',
@@ -1630,16 +1635,42 @@ window.__ModuleLoader__.load({
       '@keyframes dsh-rheostat-shine { 0% { background-position: 130% 0; } 55%, 100% { background-position: -70% 0; } }',
       '.dsh-rheostat-particle { position: absolute; bottom: 3px; border-radius: 50%; background: rgba(255,255,255,0.92); box-shadow: 0 0 6px rgba(140,180,255,0.9); opacity: 0; pointer-events: none; animation: dsh-particle-rise 2.2s linear infinite; }',
       '@keyframes dsh-particle-rise { 0% { transform: translateY(0) scale(1); opacity: 0; } 12% { opacity: 0.95; } 80% { opacity: 0.45; } 100% { transform: translateY(-18px) scale(0.35); opacity: 0; } }',
-      // Level dots hug the BOTTOM edge inside the track, below the whale
-      // thumb's visible body (sprite transparent margins keep them clear).
-      '.dsh-rheostat-dots { position: absolute; left: 0; right: 0; bottom: 1px; height: 5px; z-index: 2; pointer-events: none; }',
-      '.dsh-rheostat-dot { position: absolute; bottom: 0; top: auto; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: rgba(255,255,255,0.3); transition: background 0.25s ease, box-shadow 0.25s ease; }',
+      // Level dots sit on the track's vertical centerline; the whale thumb
+      // may cover the CURRENT stop's dot (that's the point), past/future
+      // dots stay visible around it.
+      '.dsh-rheostat-dots { position: absolute; inset: 0; z-index: 2; pointer-events: none; }',
+      '.dsh-rheostat-dot { position: absolute; top: 50%; width: 5px; height: 5px; margin-left: -2.5px; transform: translateY(-50%); border-radius: 50%; background: rgba(255,255,255,0.3); transition: background 0.25s ease, box-shadow 0.25s ease; }',
       '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
-      '.dsh-rheostat-label { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 10.5px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.97); background: rgba(36,40,54,0.72); border: 1px solid rgba(255,255,255,0.12); padding: 3px 7px; border-radius: 999px; pointer-events: none; z-index: 4; }',
       // The whale IS the thumb: it sits inside the track at the current stop
       // and can be grabbed and dragged to switch stops.
-      '.dsh-rheostat-whale { position: absolute; top: 46%; width: 44px !important; height: 33px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
+      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 50px !important; height: 36px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
       '.dsh-rheostat-whale.dragging { cursor: grabbing; }',
+      // Advanced mode: the original two-level model menu (models → efforts),
+      // styled like the shell's native selector.
+      '.dsh-rheo-adv { display: flex; flex-direction: column; gap: 2px; }',
+      '.dsh-rheo-adv-cell { width: 100%; height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: none; background: transparent; border-radius: 10px; color: var(--dsw-alias-label-primary, #F9FAFB); font: inherit; font-size: 14px; line-height: 22px; cursor: pointer; text-align: left; }',
+      '.dsh-rheo-adv-cell:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,140,160,0.16)); }',
+      '.dsh-rheo-adv-cell-label { flex: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+      // Advanced mode: the original two-level model menu (model → effort),
+      // Codex-style rows: label + current value + chevron, divider, section.
+      '.dsh-rheo-adv-cell-value { flex: none; min-width: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(220,225,238,0.55); }',
+      '.dsh-rheo-adv-cell-chevron { flex: none; color: rgba(220,225,238,0.45); display: inline-flex; }',
+      '.dsh-rheo-adv-divider { border-top: 1px solid rgba(128,140,160,0.16); margin: 6px 2px 4px; }',
+      '.dsh-rheo-adv-section { padding: 6px 12px 2px; font-size: 11px; letter-spacing: 0.4px; color: rgba(220,225,238,0.38); }',
+      '.dsh-rheo-adv-switch { width: 100%; height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: none; background: transparent; border-radius: 10px; color: rgba(220,225,238,0.62); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }',
+      '.dsh-rheo-adv-switch:hover { background: rgba(77,107,254,0.14); color: #B8C8FF; }',
+      '.dsh-rheo-adv-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; border-bottom: 1px solid rgba(128,140,160,0.14); margin-bottom: 4px; font-size: 12px; color: rgba(220,225,238,0.6); }',
+      '.dsh-rheo-adv-back { display: inline-flex; align-items: center; gap: 4px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; padding: 3px 8px; border-radius: 6px; }',
+      '.dsh-rheo-adv-back:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,140,160,0.16)); }',
+      '.dsh-rheo-adv-groups { max-height: min(330px, 48vh); overflow-y: auto; }',
+      '.dsh-rheo-adv-group-title { padding: 6px 8px 3px; font-size: 12px; font-weight: 500; line-height: 18px; color: rgba(220,225,238,0.6); }',
+      '.dsh-rheo-adv-option { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: none; background: transparent; border-radius: 10px; color: var(--dsw-alias-label-primary, #F9FAFB); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }',
+      '.dsh-rheo-adv-option:hover, .dsh-rheo-adv-option:focus-visible { background: var(--dsw-alias-interactive-bg-hover, rgba(128,140,160,0.16)); }',
+      '.dsh-rheo-adv-option:disabled { opacity: 0.5; cursor: default; }',
+      '.dsh-rheo-adv-option-copy { display: flex; flex-direction: column; flex: 1; min-width: 0; }',
+      '.dsh-rheo-adv-option-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; line-height: 20px; }',
+      '.dsh-rheo-adv-option-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 18px; color: rgba(220,225,238,0.6); }',
+      '.dsh-rheo-adv-check { color: #679EFE; flex: 0 0 18px; display: grid; place-items: center; }',
       '.dsh-rheostat-whale-inner { position: absolute; inset: 0; animation: dsh-whale-state-in 0.18s ease-out both; }',
       '.dsh-rheostat-whale-bob { position: absolute; inset: 0; animation: dsh-whale-bob var(--sprite-duration, 2.4s) ease-in-out infinite; }',
       '.dsh-rheostat-whale-frame { position: absolute; inset: 0; display: block; background-repeat: no-repeat; background-size: 600% 400%; background-position: 0% 0%; animation: dsh-whale-sprite var(--sprite-duration, 2.4s) step-end infinite; }',
@@ -1700,7 +1731,7 @@ window.__ModuleLoader__.load({
       return `${WHALE_SPRITE_BASE}/${sprite}.webp`
     }
 
-    function ModelRheostat({ sessionId, locked, connection }) {
+    function ModelRheostat({ sessionId, locked, connection, gateway }) {
       const [groups, setGroups] = react.useState(null)
       const [current, setCurrent] = react.useState(null)
       const [busy, setBusy] = react.useState(false)
@@ -1709,8 +1740,32 @@ window.__ModuleLoader__.load({
       const trackRef = react.useRef(null)
       const rootRef = react.useRef(null)
 
+      // Two forms: the whale rheostat (default) and the advanced two-level
+      // model menu (model → reasoning effort), toggled from the chip and
+      // persisted host-side so desktop and phone share the preference.
+      const [mode, setMode] = react.useState('rheostat')
+      const [pane, setPane] = react.useState('root')
+      react.useEffect(() => {
+        if (typeof gateway?.desktopConfig !== 'function') return
+        gateway.desktopConfig().then((r) => {
+          const stored = r?.value?.config?.modelMode
+          if (stored === 'advanced' || stored === 'rheostat') setMode(stored)
+        }).catch(() => {})
+      }, [gateway])
+      const toggleMode = react.useCallback(() => {
+        setMode((currentMode) => {
+          const next = currentMode === 'rheostat' ? 'advanced' : 'rheostat'
+          if (typeof gateway?.saveDesktopConfig === 'function') {
+            gateway.saveDesktopConfig({ modelMode: next }).catch(() => {})
+          }
+          return next
+        })
+        setPane('root')
+        setExpanded(true)
+      }, [gateway])
+
       // Collapsed by default: the seat shows a chip identical to the shell's
-      // default model trigger; clicking it opens the whale rheostat popover.
+      // default model trigger; clicking it opens the active form's popover.
       react.useEffect(() => {
         if (!expanded) return
         const onPointerDown = (event) => {
@@ -1845,6 +1900,53 @@ window.__ModuleLoader__.load({
         }).catch(() => setBusy(false))
       }, [stops, busy, sessionId, connection])
 
+      // Advanced-mode actions: switch the session model or its effort through
+      // the same official session.selectModel wire as the shell's menu.
+      const chooseModel = react.useCallback((provider, modelId) => {
+        const group = (groups ?? []).find((g) => g.id === provider)
+        const model = group?.models?.find((m) => m.id === modelId)
+        if (model === undefined) return
+        if (current?.provider === provider && current?.model === modelId) {
+          setExpanded(false)
+          return
+        }
+        const effort = model.reasoning?.defaultEffort ?? model.reasoning?.efforts?.[0]?.id
+        setBusy(true)
+        connection.api.sessions.selectModel({
+          sessionId,
+          provider,
+          model: modelId,
+          ...(effort === undefined ? {} : { reasoningEffort: effort }),
+        }).then((r) => {
+          setBusy(false)
+          if (r && r.result && r.result.ok) {
+            setCurrent(r.result.value.selected ?? null)
+            setExpanded(false)
+          }
+        }).catch(() => setBusy(false))
+      }, [groups, current, busy, sessionId, connection])
+
+      const chooseEffort = react.useCallback((effortId) => {
+        if (current === null) return
+        if (current.reasoningEffort === effortId) {
+          setExpanded(false)
+          return
+        }
+        setBusy(true)
+        connection.api.sessions.selectModel({
+          sessionId,
+          provider: current.provider,
+          model: current.model,
+          reasoningEffort: effortId,
+        }).then((r) => {
+          setBusy(false)
+          if (r && r.result && r.result.ok) {
+            setCurrent(r.result.value.selected ?? null)
+            setExpanded(false)
+          }
+        }).catch(() => setBusy(false))
+      }, [current, busy, sessionId, connection])
+
       const stopFromEvent = (clientX) => {
         const el = trackRef.current
         if (el === null || stops.length < 2) return 0
@@ -1887,8 +1989,7 @@ window.__ModuleLoader__.load({
       const title = noStops
         ? `模型：${triggerName}`
         : `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
-      const shortName = noStops ? '' : `${stop.modelLabel} · ${stop.effortName}`
-      const THUMB = 22 // half of the whale width; the whale IS the thumb
+      const THUMB = 25 // half of the whale width; the whale IS the thumb
       const fillStyle = noStops ? null : {
         width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
         background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
@@ -1897,8 +1998,8 @@ window.__ModuleLoader__.load({
         left: `calc(${THUMB}px + (100% - ${THUMB * 2}px) * ${level})`,
         '--sprite-duration': `${stop.duration}s`,
       }
-      // Level ticks: every stop keeps a visible dot (past = lit, future =
-      // dim) inside the track bottom, clear of the whale thumb.
+      // Level ticks: one dot per stop on the track's centerline (past = lit,
+      // future = dim); the whale thumb covers only its own dot.
       const dots = noStops ? [] : stops.map((_, index) => react.createElement('span', {
         key: index,
         className: `dsh-rheostat-dot${index < idx ? ' past' : ''}`,
@@ -1909,6 +2010,105 @@ window.__ModuleLoader__.load({
         { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
         react.createElement('path', { d: 'M3.5 5.5 7 9l3.5-3.5', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }),
       )
+      const chevronRight = react.createElement(
+        'svg',
+        { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
+        react.createElement('path', { d: 'M5.5 3.5 9 7l-3.5 3.5', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+      )
+      const checkIcon = react.createElement(
+        'svg',
+        { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
+        react.createElement('path', { d: 'M2.5 7.5 5.5 10.5 11.5 4', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+      )
+      const boltIcon = react.createElement(
+        'svg',
+        { width: 13, height: 13, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
+        react.createElement('path', { d: 'M8 1.5 3 8h3.2L6 12.5 11 6H7.8L8 1.5z', fill: 'currentColor' }),
+      )
+      const currentEffortName = (() => {
+        if (current === null) return ''
+        const efforts = currentModel?.reasoning?.efforts ?? []
+        return efforts.find((e) => e.id === current.reasoningEffort)?.name ?? current.reasoningEffort ?? ''
+      })()
+      // Advanced mode: the original two-level model menu (model → effort),
+      // Codex-style: label + value rows, divider, muted 高级 section.
+      const advancedContent = mode !== 'advanced' ? null : (() => {
+        const foot = react.createElement(react.Fragment, null,
+          react.createElement('div', { className: 'dsh-rheo-adv-divider' }),
+          react.createElement('div', { className: 'dsh-rheo-adv-section' }, '高级'),
+          react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-switch', onClick: toggleMode }, '鲸鱼变阻器'),
+        )
+        if (pane === 'model') {
+          return react.createElement('div', { className: 'dsh-rheo-adv' },
+            react.createElement('div', { className: 'dsh-rheo-adv-head' },
+              react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-back', onClick: () => setPane('root') }, '‹ 返回'),
+              react.createElement('span', null, '选择模型'),
+            ),
+            react.createElement('div', { className: 'dsh-rheo-adv-groups' },
+              (groups ?? []).map((group) => react.createElement('div', { key: group.id },
+                react.createElement('div', { className: 'dsh-rheo-adv-group-title' }, group.name ?? group.id),
+                (group.models ?? []).map((model) => {
+                  const selected = current !== null && current.provider === group.id && current.model === model.id
+                  return react.createElement('button', {
+                    key: model.id,
+                    type: 'button',
+                    className: 'dsh-rheo-adv-option',
+                    disabled: busy,
+                    onClick: () => chooseModel(group.id, model.id),
+                  },
+                    react.createElement('span', { className: 'dsh-rheo-adv-option-copy' },
+                      react.createElement('span', { className: 'dsh-rheo-adv-option-name' }, model.name ?? model.id),
+                      model.description !== undefined && react.createElement('span', { className: 'dsh-rheo-adv-option-desc' }, model.description),
+                    ),
+                    react.createElement('span', { className: 'dsh-rheo-adv-check' }, selected ? checkIcon : null),
+                  )
+                }),
+              )),
+            ),
+          )
+        }
+        if (pane === 'effort') {
+          const efforts = currentModel?.reasoning?.efforts ?? []
+          return react.createElement('div', { className: 'dsh-rheo-adv' },
+            react.createElement('div', { className: 'dsh-rheo-adv-head' },
+              react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-back', onClick: () => setPane('root') }, '‹ 返回'),
+              react.createElement('span', null, `思考强度 · ${triggerName}`),
+            ),
+            efforts.length === 0
+              ? react.createElement('div', { style: { padding: '14px', fontSize: '12px', color: 'rgba(220,225,238,0.6)' } }, '该模型没有推理档位。')
+              : react.createElement('div', { className: 'dsh-rheo-adv-groups' },
+                  efforts.map((effort) => {
+                    const selected = current?.reasoningEffort === effort.id
+                    return react.createElement('button', {
+                      key: effort.id,
+                      type: 'button',
+                      className: 'dsh-rheo-adv-option',
+                      disabled: busy,
+                      onClick: () => chooseEffort(effort.id),
+                    },
+                      react.createElement('span', { className: 'dsh-rheo-adv-option-copy' },
+                        react.createElement('span', { className: 'dsh-rheo-adv-option-name' }, effort.name ?? effort.id),
+                      ),
+                      react.createElement('span', { className: 'dsh-rheo-adv-check' }, selected ? checkIcon : null),
+                    )
+                  }),
+                ),
+          )
+        }
+        return react.createElement('div', { className: 'dsh-rheo-adv' },
+          react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-cell', onClick: () => setPane('model') },
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-label' }, '模型'),
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-value' }, triggerName),
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-chevron' }, chevronRight),
+          ),
+          react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-cell', onClick: () => setPane('effort') },
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-label' }, '思考强度'),
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-value' }, currentEffortName || '—'),
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-chevron' }, chevronRight),
+          ),
+          foot,
+        )
+      })()
       // Grabbing the whale starts a drag; stopPropagation keeps the track's
       // own pointerdown (bubbled) from firing a duplicate select.
       const onWhalePointerDown = (event) => {
@@ -1935,22 +2135,31 @@ window.__ModuleLoader__.load({
         expanded && react.createElement(
           'div',
           { className: 'dsh-rheo-pop', role: 'dialog', 'aria-label': '模型与思考强度调节' },
-          noStops
-            ? react.createElement(
-              'div',
-              { style: { padding: '18px 14px', fontSize: '12px', lineHeight: 1.6, color: 'rgba(220,225,238,0.6)' } },
-              `当前模型「${triggerName}」不支持推理档位调节。`,
-            )
-            : react.createElement(
-            'div',
-            { className: 'dsh-rheo-sea' },
-            react.createElement('span', { className: 'dsh-rheostat-dots', 'aria-hidden': true }, dots),
-            react.createElement(
+          mode === 'advanced'
+            ? advancedContent
+            : noStops
+              ? react.createElement(
+                'div',
+                { style: { padding: '18px 14px', fontSize: '12px', lineHeight: 1.6, color: 'rgba(220,225,238,0.6)' } },
+                `当前模型「${triggerName}」不支持推理档位调节。`,
+              )
+              : react.createElement(
+              react.Fragment,
+              null,
+              // Codex-style panel header: 高级 > entry (switches to the model
+              // menu) on the left, bolt on the right.
+              react.createElement(
+                'div',
+                { className: 'dsh-rheo-head' },
+                react.createElement('button', { type: 'button', className: 'dsh-rheo-head-link', onClick: toggleMode }, '高级', chevronRight),
+                react.createElement('span', { className: 'dsh-rheo-bolt', 'aria-hidden': true }, boltIcon),
+              ),
+              react.createElement(
               'div',
               {
                 ref: trackRef,
                 className: locked ? 'dsh-rheostat-track dsh-rheostat-locked' : 'dsh-rheostat-track',
-                style: { height: 40, minHeight: 40 },
+                style: { height: 44, minHeight: 44 },
                 onPointerDown,
                 onPointerMove,
                 onPointerUp,
@@ -1973,7 +2182,7 @@ window.__ModuleLoader__.load({
                   },
                 })),
               ),
-              react.createElement('span', { className: 'dsh-rheostat-label' }, shortName),
+              react.createElement('span', { className: 'dsh-rheostat-dots', 'aria-hidden': true }, dots),
               react.createElement(
                 'span',
                 {
@@ -1994,8 +2203,8 @@ window.__ModuleLoader__.load({
                 ),
               ),
             ),
+            ),
           ),
-        ),
       )
     }
 
@@ -2449,7 +2658,7 @@ window.__ModuleLoader__.load({
             // single-seat election renders the LOWEST priority; the shell
             // occupies priority 0, so go below it to take the seat.
             priority: -10,
-            inject: () => ({ connection }),
+            inject: () => ({ connection, gateway }),
           },
           ModelRheostat,
         ),

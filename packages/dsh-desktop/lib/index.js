@@ -770,7 +770,7 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
         throw new Error('patch 必须是对象')
       }
       const current = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
-      const allowed = ['notifications', 'launchAtLogin', 'proxyUrl', 'updateUrl', 'statsExpanded', 'statsStyle', 'lanAccess']
+      const allowed = ['notifications', 'launchAtLogin', 'proxyUrl', 'updateUrl', 'statsExpanded', 'statsStyle', 'lanAccess', 'modelMode']
       for (const key of Object.keys(patch)) {
         if (!allowed.includes(key)) throw new Error(`未知配置项：${key}`)
         current[key] = patch[key]
