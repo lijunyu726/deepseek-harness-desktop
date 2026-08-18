@@ -1820,7 +1820,11 @@ window.__ModuleLoader__.load({
         if (model === undefined) return []
         const efforts = model.reasoning?.efforts ?? []
         if (efforts.length === 0) return []
-        return efforts.map((effort) => ({
+        // Animation speed scales with effort index: lowest = slowest (3.0s),
+        // highest = fastest (1.333s) — same range as DeepSeek's dedicated sprites.
+        const minDur = 1.333
+        const maxDur = 3.0
+        return efforts.map((effort, i) => ({
           provider: group.id,
           model: model.id,
           effort: effort.id,
@@ -1828,7 +1832,9 @@ window.__ModuleLoader__.load({
           effortName: effort.name ?? effort.id,
           modelLabel: model.name ?? model.id,
           sprite: 'pro-off',
-          duration: 2.2,
+          duration: efforts.length > 1
+            ? maxDur - (maxDur - minDur) * (i / (efforts.length - 1))
+            : 2.2,
         }))
       }, [groups, current])
 
