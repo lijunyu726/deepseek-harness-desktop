@@ -1368,7 +1368,7 @@ window.__ModuleLoader__.load({
       '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
       // Visual bar 10x2.5px; the padding gives every tick a generous
       // invisible hit area (~14x12.5px) so selection doesn't need pixel aim.
-      '.dsh-prompt-rail-tick { display: block; box-sizing: border-box; width: 14px; height: 12.5px; padding: 5px 2px; background-clip: content-box; background-color: rgba(190,200,220,0.4); border-radius: 999px; cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.16s ease, opacity 0.16s ease; }',
+      '.dsh-prompt-rail-tick { display: block; box-sizing: border-box; width: 10px; height: 3px; background-color: rgba(190,200,220,0.4); border-radius: 999px; cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.16s ease, opacity 0.16s ease; }',
       '.dsh-prompt-rail-tick:hover { background-color: rgba(255,255,255,0.95); }',
       '.dsh-prompt-rail-pop { position: fixed; z-index: 13; width: min(340px, calc(100vw - 90px)); max-height: 260px; display: flex; flex-direction: column; border: 1px solid rgba(128,140,160,0.34); border-radius: 10px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 36px rgba(0,0,0,0.5); backdrop-filter: blur(16px); animation: dsh-prompt-rail-pop-in 0.14s ease-out; }',
       '.dsh-prompt-rail-pop::before { content: ""; position: absolute; left: -6px; top: 16px; width: 12px; height: 12px; background: rgba(18,21,30,0.97); border-left: 1px solid rgba(128,140,160,0.34); border-bottom: 1px solid rgba(128,140,160,0.34); transform: rotate(45deg); }',
