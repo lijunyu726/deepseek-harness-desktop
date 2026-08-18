@@ -1740,24 +1740,45 @@ window.__ModuleLoader__.load({
       }, [])
 
       const stops = react.useMemo(() => {
-        const group = (groups ?? []).find((g) => g.id === 'deepseek-official')
-        if (group === undefined) return []
-        return WHALE_STATES.flatMap((state) => {
-          const model = (group.models ?? []).find((entry) => entry.id === state.model)
-          const effort = (model?.reasoning?.efforts ?? []).find((entry) => entry.id === state.effort)
-          if (model === undefined || effort === undefined) return []
-          return [{
-            provider: group.id,
-            model: state.model,
-            effort: state.effort,
-            modelName: model.name ?? state.model,
-            effortName: effort.name ?? state.effort,
-            modelLabel: state.modelLabel,
-            sprite: state.sprite,
-            duration: state.duration,
-          }]
-        })
-      }, [groups])
+        // DeepSeek keeps the chained Flash→Pro six-stop design.
+        if (current?.provider === 'deepseek-official') {
+          const group = (groups ?? []).find((g) => g.id === 'deepseek-official')
+          if (group === undefined) return []
+          return WHALE_STATES.flatMap((state) => {
+            const model = (group.models ?? []).find((entry) => entry.id === state.model)
+            const effort = (model?.reasoning?.efforts ?? []).find((entry) => entry.id === state.effort)
+            if (model === undefined || effort === undefined) return []
+            return [{
+              provider: group.id,
+              model: state.model,
+              effort: state.effort,
+              modelName: model.name ?? state.model,
+              effortName: effort.name ?? state.effort,
+              modelLabel: state.modelLabel,
+              sprite: state.sprite,
+              duration: state.duration,
+            }]
+          })
+        }
+        // Other vendors: adapt the stops to the CURRENT model's own
+        // reasoning efforts (whatever the catalog reports).
+        if (current === null) return []
+        const group = (groups ?? []).find((g) => g.id === current.provider)
+        const model = group?.models?.find((entry) => entry.id === current.model)
+        if (model === undefined) return []
+        const efforts = model.reasoning?.efforts ?? []
+        if (efforts.length === 0) return []
+        return efforts.map((effort) => ({
+          provider: group.id,
+          model: model.id,
+          effort: effort.id,
+          modelName: model.name ?? model.id,
+          effortName: effort.name ?? effort.id,
+          modelLabel: model.name ?? model.id,
+          sprite: 'pro-off',
+          duration: 2.2,
+        }))
+      }, [groups, current])
 
       react.useEffect(() => {
         const load = () => {
@@ -1780,11 +1801,10 @@ window.__ModuleLoader__.load({
 
       const stopIndex = react.useMemo(() => {
         if (stops.length === 0 || current === null) return 0
-        if (current.provider !== 'deepseek-official') return 0
         let idx = stops.findIndex((s) => s.model === current.model && s.effort === current.reasoningEffort)
         if (idx === -1) {
           const defaultEffort = (groups ?? [])
-            .find((g) => g.id === 'deepseek-official')?.models
+            .find((g) => g.id === current.provider)?.models
             ?.find((m) => m.id === current.model)?.reasoning?.defaultEffort
           idx = stops.findIndex((s) => s.model === current.model && s.effort === defaultEffort)
         }
@@ -1848,24 +1868,38 @@ window.__ModuleLoader__.load({
       }
       const onPointerUp = () => setDragging(false)
 
-      if (stops.length === 0) return null
+      const noStops = stops.length === 0
+      if (noStops && current === null) return null
       const idx = stopIndex
-      const level = stops.length > 1 ? stopIndex / (stops.length - 1) : 0
       const stop = stops[idx]
-      const shortName = `${stop.modelLabel} · ${stop.effortName}`
-      const title = `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
+      const level = stops.length > 1 ? stopIndex / (stops.length - 1) : 0
+      // The collapsed chip always shows the REAL current model (never the
+      // fallback first stop), so third-party models read correctly.
+      const currentModel = (() => {
+        if (current === null) return null
+        const group = (groups ?? []).find((g) => g.id === current.provider)
+        return group?.models?.find((m) => m.id === current.model) ?? null
+      })()
+      const triggerName = noStops
+        ? (currentModel?.name ?? current?.model ?? '模型')
+        : stop.modelLabel
+      const triggerEffort = noStops ? '' : stop.effortName
+      const title = noStops
+        ? `模型：${triggerName}`
+        : `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
+      const shortName = noStops ? '' : `${stop.modelLabel} · ${stop.effortName}`
       const THUMB = 22 // half of the whale width; the whale IS the thumb
-      const fillStyle = {
+      const fillStyle = noStops ? null : {
         width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
         background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
       }
-      const whaleStyle = {
+      const whaleStyle = noStops ? null : {
         left: `calc(${THUMB}px + (100% - ${THUMB * 2}px) * ${level})`,
         '--sprite-duration': `${stop.duration}s`,
       }
       // Level ticks: every stop keeps a visible dot (past = lit, future =
-      // dim) in a row ABOVE the track, clear of the whale thumb.
-      const dots = stops.map((_, index) => react.createElement('span', {
+      // dim) inside the track bottom, clear of the whale thumb.
+      const dots = noStops ? [] : stops.map((_, index) => react.createElement('span', {
         key: index,
         className: `dsh-rheostat-dot${index < idx ? ' past' : ''}`,
         style: { left: `calc(${THUMB}px + (100% - ${THUMB * 2}px) * ${index / Math.max(1, stops.length - 1)})` },
@@ -1894,14 +1928,20 @@ window.__ModuleLoader__.load({
             disabled: locked,
             onClick: () => setExpanded((value) => !value),
           },
-          react.createElement('span', { className: 'dsh-rheo-trigger-label' }, stop.modelLabel),
-          react.createElement('span', { className: 'dsh-rheo-trigger-effort' }, stop.effortName),
+          react.createElement('span', { className: 'dsh-rheo-trigger-label' }, triggerName),
+          triggerEffort !== '' && react.createElement('span', { className: 'dsh-rheo-trigger-effort' }, triggerEffort),
           react.createElement('span', { className: `dsh-rheo-chevron${expanded ? ' open' : ''}` }, chevron),
         ),
         expanded && react.createElement(
           'div',
           { className: 'dsh-rheo-pop', role: 'dialog', 'aria-label': '模型与思考强度调节' },
-          react.createElement(
+          noStops
+            ? react.createElement(
+              'div',
+              { style: { padding: '18px 14px', fontSize: '12px', lineHeight: 1.6, color: 'rgba(220,225,238,0.6)' } },
+              `当前模型「${triggerName}」不支持推理档位调节。`,
+            )
+            : react.createElement(
             'div',
             { className: 'dsh-rheo-sea' },
             react.createElement('span', { className: 'dsh-rheostat-dots', 'aria-hidden': true }, dots),
