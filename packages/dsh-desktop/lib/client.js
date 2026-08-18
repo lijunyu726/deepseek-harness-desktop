@@ -1412,6 +1412,12 @@ window.__ModuleLoader__.load({
       itemsRef.current = items
       inputRef.current = input
 
+      // Expose inputActions globally so the ESC cancel handler can use setDraft.
+      react.useEffect(() => {
+        window.__dshInputActions = inputActions
+        return () => { window.__dshInputActions = null }
+      }, [inputActions])
+
       react.useEffect(() => {
         installPromptHistoryStyle()
       }, [])
@@ -2550,6 +2556,116 @@ window.__ModuleLoader__.load({
           observer.disconnect()
         }
       }, 'dsh-desktop: task-done observer')
+
+      // — ESC 停止当前任务 + 编辑按钮 -------------------------------------------
+      // Global edit-after-cancel store: UserMessageNodeView (in node_modules)
+      // subscribes to this via useSyncExternalStore to reactively show a pencil
+      // icon on the last user message after the user presses ESC.
+      let _editListeners = new Set()
+      let _editSnapshot = null
+      window.__dshEditStore = {
+        subscribe(fn) {
+          _editListeners.add(fn)
+          return () => _editListeners.delete(fn)
+        },
+        getSnapshot() { return _editSnapshot },
+      }
+      function _setEditSnapshot(next) {
+        _editSnapshot = next
+        for (const fn of _editListeners) fn()
+      }
+
+      // Find the last user message key in the chat DOM so we can tell
+      // UserMessageNodeView which row should show the edit button.
+      function _findLastUserMessageKey() {
+        const rows = document.querySelectorAll('[data-chat-flow-kind="user"]')
+        if (rows.length === 0) return null
+        return rows[rows.length - 1].dataset.chatFlowKey ?? null
+      }
+
+      // Find the text content of the last user message from the DOM bubble.
+      function _findLastUserMessageText() {
+        const rows = document.querySelectorAll('[data-chat-flow-kind="user"]')
+        if (rows.length === 0) return ''
+        const row = rows[rows.length - 1]
+        const bubble = row.querySelector('[class*="bubble"]')
+        if (bubble) return bubble.textContent ?? ''
+        return row.textContent ?? ''
+      }
+
+      // ESC keydown handler: cancel the running task and show edit button on
+      // the last user message.
+      function _onEscKeydown(e) {
+        if (e.key !== 'Escape' || e.defaultPrevented) return
+        // Don't intercept ESC in input fields (e.g. closing a dropdown)
+        // unless the agent is running (then we want to cancel).
+        const statusEl = document.querySelector('div[role="status"]')
+        if (statusEl === null) return // agent not running
+        e.preventDefault()
+        e.stopPropagation()
+        // Click the stop button (already wired to the correct cancel function)
+        const stopBtn = document.querySelector('button[aria-label="停止生成"], button[aria-label="Stop generating"]')
+        if (stopBtn) {
+          stopBtn.click()
+        }
+        // Activate edit button on the last user message after a short delay
+        // (let the cancel settle).
+        setTimeout(() => {
+          const key = _findLastUserMessageKey()
+          if (key === null) return
+          _setEditSnapshot({
+            lastUserKey: key,
+            onEdit: (text) => {
+              // Clear the edit state first
+              _setEditSnapshot(null)
+              // Use the DOM text as fallback; the text param from actions()
+              // callback is the contentParts text which is more accurate.
+              const editText = text || _findLastUserMessageText()
+              if (!editText) return
+              // Use inputActions.setDraft if available (preserves React state
+              // invariants), otherwise fall back to DOM native setter.
+              const ia = window.__dshInputActions
+              if (ia && typeof ia.setDraft === 'function') {
+                ia.setDraft(editText)
+                focusComposerAtEnd()
+              } else {
+                const textarea = document.querySelector('[data-composer-card] textarea')
+                if (!(textarea instanceof HTMLTextAreaElement)) return
+                const nativeSetter = Object.getOwnPropertyDescriptor(
+                  HTMLTextAreaElement.prototype, 'value'
+                )?.set
+                if (nativeSetter) {
+                  nativeSetter.call(textarea, editText)
+                } else {
+                  textarea.value = editText
+                }
+                textarea.dispatchEvent(new Event('input', { bubbles: true }))
+                textarea.focus({ preventScroll: true })
+                const end = textarea.value.length
+                textarea.setSelectionRange(end, end)
+              }
+            },
+          })
+          // Auto-clear edit state when the agent starts running again.
+          const clearOnRun = () => {
+            _setEditSnapshot(null)
+            observer2.disconnect()
+          }
+          const observer2 = new MutationObserver(() => {
+            if (document.querySelector('div[role="status"]') !== null) clearOnRun()
+          })
+          observer2.observe(document.body, { childList: true, subtree: true })
+        }, 300)
+      }
+      document.addEventListener('keydown', _onEscKeydown, { capture: true })
+
+      ctx.effect(() => {
+        return () => {
+          document.removeEventListener('keydown', _onEscKeydown, { capture: true })
+          _setEditSnapshot(null)
+          delete window.__dshEditStore
+        }
+      }, 'dsh-desktop: esc-cancel-edit')
 
       // — @会话 mention source (Codex-style cross-session references) ---------
       // Mirrors the slash-skill pipeline: typing '@' opens the trigger menu;
