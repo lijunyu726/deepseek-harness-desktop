@@ -1547,10 +1547,12 @@ window.__ModuleLoader__.load({
       const tickStyle = (index) => {
         if (mouseY === null) return null
         const distance = Math.abs(measure.firstTop + index * measure.step - mouseY)
-        // Wide symmetric dome: the bulge spans ~±2-3 ticks around the cursor,
-        // so the column reads as one regular swell instead of a lone long bar.
-        const scale = Math.min(1.5, Math.max(1, 1.5 - distance * 0.02))
-        const opacity = Math.min(1, Math.max(0.6, 1 - distance * 0.008))
+        // Codex-style bell curve: selected item is 3.5x wide, neighbors
+        // fall off steeply (Gaussian-like: e^(-d²/σ²)).
+        const sigma = 40 // controls spread — smaller = tighter peak
+        const gaussian = Math.exp(-(distance * distance) / (2 * sigma * sigma))
+        const scale = 1 + 2.5 * gaussian // 1.0 (far) → 3.5 (hovered)
+        const opacity = 0.4 + 0.6 * gaussian // 0.4 (far) → 1.0 (hovered)
         return { transform: `scaleX(${scale})`, opacity }
       }
       return react.createElement(
@@ -2838,131 +2840,84 @@ window.__ModuleLoader__.load({
         ),
       )
 
-      // --- File / folder upload button in the input dock area ---
-      function FileUploadButton() {
-        const fileRef = react.useRef(null)
-        const folderRef = react.useRef(null)
-        const [menuOpen, setMenuOpen] = react.useState(false)
-        const menuRef = react.useRef(null)
+      // --- File / folder upload: inject into the "+" command menu ---
+      // Use a MutationObserver to detect when the command menu opens and
+      // add "上传文件" and "上传文件夹" items at the top.
+      const _fileInput = document.createElement('input')
+      _fileInput.type = 'file'
+      _fileInput.multiple = true
+      _fileInput.style.display = 'none'
+      const _folderInput = document.createElement('input')
+      _folderInput.type = 'file'
+      _folderInput.webkitdirectory = ''
+      _folderInput.style.display = 'none'
+      document.body.appendChild(_fileInput)
+      document.body.appendChild(_folderInput)
 
-        react.useEffect(() => {
-          if (!menuOpen) return
-          const onDown = (e) => {
-            if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
-          }
-          document.addEventListener('pointerdown', onDown, true)
-          return () => document.removeEventListener('pointerdown', onDown, true)
-        }, [menuOpen])
-
-        const handleFiles = react.useCallback((files) => {
-          if (!files || files.length === 0) return
-          setMenuOpen(false)
-          // Dispatch a custom event that the conversation UI can pick up.
-          // Fallback: directly call the shell's addImages if available.
-          const fileList = Array.from(files)
+      function _triggerFileInput(input) {
+        input.onchange = () => {
+          if (!input.files || input.files.length === 0) return
           const dt = new DataTransfer()
-          fileList.forEach((f) => dt.items.add(f))
-          // Try to find the hidden image input in the DOM and set its files.
+          Array.from(input.files).forEach((f) => dt.items.add(f))
+          // Find the conversation's hidden image input and dispatch
           const imgInput = document.querySelector('input[type="file"][accept*="image"]')
           if (imgInput) {
             const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files').set
             nativeSet.call(imgInput, dt.files)
             imgInput.dispatchEvent(new Event('change', { bubbles: true }))
-          } else {
-            // Fallback: trigger via shell's addImages if exposed on window
-            if (typeof window.__dshAddImages === 'function') window.__dshAddImages(fileList)
           }
-        }, [])
-
-        const btnStyle = {
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          width: 28, height: 28, borderRadius: 8, border: 'none',
-          background: 'transparent', color: 'rgba(190,200,220,0.7)',
-          cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
-          position: 'relative',
+          input.value = ''
         }
-        const menuItemStyle = {
-          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-          padding: '7px 12px', border: 'none', background: 'transparent',
-          color: 'rgba(243,245,250,0.94)', font: 'inherit', fontSize: 13,
-          cursor: 'pointer', borderRadius: 6, textAlign: 'left',
-        }
-
-        return react.createElement('div', { style: { position: 'relative' }, ref: menuRef },
-          react.createElement('button', {
-            type: 'button',
-            style: btnStyle,
-            title: '上传文件',
-            'aria-label': '上传文件',
-            onClick: () => setMenuOpen(!menuOpen),
-            onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(128,140,160,0.16)'; e.currentTarget.style.color = '#F9FAFB' },
-            onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(190,200,220,0.7)' },
-          },
-            // Paperclip icon (simple SVG)
-            react.createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-              react.createElement('path', {
-                d: 'M13.5 7.5L8 13C6.34 14.66 3.66 14.66 2 13C.34 11.34.34 8.66 2 7L8.5.5C9.6-.6 11.4-.6 12.5.5C13.6 1.6 13.6 3.4 12.5 4.5L6 11C5.45 11.55 4.55 11.55 4 11C3.45 10.45 3.45 9.55 4 9L9.5 3.5',
-                stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round',
-              }),
-            ),
-          ),
-          menuOpen && react.createElement('div', {
-            style: {
-              position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, zIndex: 100,
-              minWidth: 160, padding: '4px',
-              background: 'rgba(18,21,30,0.97)', border: '1px solid rgba(128,140,160,0.3)',
-              borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-              backdropFilter: 'blur(16px)',
-            },
-          },
-            react.createElement('button', {
-              type: 'button', style: menuItemStyle,
-              onClick: () => fileRef.current?.click(),
-              onMouseEnter: (e) => e.currentTarget.style.background = 'rgba(128,140,160,0.16)',
-              onMouseLeave: (e) => e.currentTarget.style.background = 'transparent',
-            },
-              react.createElement('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
-                react.createElement('path', { d: 'M7 1v9M3.5 6.5L7 10l3.5-3.5', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
-                react.createElement('path', { d: 'M2 10.5v1.5h10v-1.5', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
-              ),
-              '上传文件',
-            ),
-            react.createElement('button', {
-              type: 'button', style: menuItemStyle,
-              onClick: () => folderRef.current?.click(),
-              onMouseEnter: (e) => e.currentTarget.style.background = 'rgba(128,140,160,0.16)',
-              onMouseLeave: (e) => e.currentTarget.style.background = 'transparent',
-            },
-              react.createElement('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
-                react.createElement('path', { d: 'M1.5 3.5h4l1.5 2h5.5v7h-11z', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
-                react.createElement('path', { d: 'M5 8v3M6.5 9.5H3.5', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
-              ),
-              '上传文件夹',
-            ),
-          ),
-          // Hidden file inputs
-          react.createElement('input', {
-            ref: fileRef, type: 'file', multiple: true, style: { display: 'none' },
-            onChange: (e) => handleFiles(e.target.files),
-          }),
-          react.createElement('input', {
-            ref: folderRef, type: 'file', webkitdirectory: '', style: { display: 'none' },
-            onChange: (e) => handleFiles(e.target.files),
-          }),
-        )
+        input.click()
       }
 
-      ctx.slots.inject('conversation.input.dock', () =>
-        ctx.slots.register(
-          {
-            name: 'conversation.input.dock',
-            id: 'file-upload-button',
-            priority: -5,
-            inject: () => ({}),
-          },
-          FileUploadButton,
-        ),
-      )
+      let _uploadMenuInjected = false
+      const _menuObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (!(node instanceof HTMLElement)) continue
+            // The command menu is a listbox/popover that appears near the "+" button.
+            // Look for it by role or class pattern.
+            const menu = node.matches?.('[role="listbox"]')
+              ? node
+              : node.querySelector?.('[role="listbox"]')
+            if (!menu) continue
+            // Check if it's the command menu (contains slash command items)
+            const items = menu.querySelectorAll('[role="option"], [data-command]')
+            if (items.length === 0 && !menu.textContent?.includes('/')) continue
+            // Avoid duplicate injection
+            if (menu.querySelector('[data-dsh-upload-item]')) continue
+            // Inject file/folder upload items at the top
+            const separator = document.createElement('div')
+            separator.setAttribute('data-dsh-upload-item', 'separator')
+            separator.style.cssText = 'height:1px;background:rgba(128,140,160,0.16);margin:4px 8px;'
+
+            const makeItem = (label, icon, onClick) => {
+              const btn = document.createElement('button')
+              btn.setAttribute('data-dsh-upload-item', 'true')
+              btn.type = 'button'
+              btn.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;padding:6px 12px;border:none;background:transparent;color:rgba(243,245,250,0.94);font:inherit;font-size:13px;cursor:pointer;border-radius:6px;text-align:left;'
+              btn.onmouseenter = () => btn.style.background = 'rgba(128,140,160,0.16)'
+              btn.onmouseleave = () => btn.style.background = 'transparent'
+              btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">${icon}</svg><span>${label}</span>`
+              btn.addEventListener('click', (e) => {
+                e.stopPropagation()
+                onClick()
+              })
+              return btn
+            }
+
+            const fileIcon = '<path d="M7 1v9M3.5 6.5L7 10l3.5-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10.5v1.5h10v-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+            const folderIcon = '<path d="M1.5 3.5h4l1.5 2h5.5v7h-11z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 8v3M6.5 9.5H3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+
+            const firstChild = menu.firstChild
+            menu.insertBefore(makeItem('上传文件夹', folderIcon, () => _triggerFileInput(_folderInput)), firstChild)
+            menu.insertBefore(makeItem('上传文件', fileIcon, () => _triggerFileInput(_fileInput)), firstChild)
+            menu.insertBefore(separator, firstChild)
+          }
+        }
+      })
+      _menuObserver.observe(document.body, { childList: true, subtree: true })
     }
 
     exports.apply = apply
