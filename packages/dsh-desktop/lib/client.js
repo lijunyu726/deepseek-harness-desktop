@@ -1642,7 +1642,7 @@ window.__ModuleLoader__.load({
       '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
       // The whale IS the thumb: it sits inside the track at the current stop
       // and can be grabbed and dragged to switch stops.
-      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 34px !important; height: 28px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
+      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 40px !important; height: 32px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
       '.dsh-rheostat-whale.dragging { cursor: grabbing; }',
       // Advanced mode: the original two-level model menu (models → efforts),
       // styled like the shell's native selector.
@@ -1652,7 +1652,7 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-adv-cell-label { flex: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
       // Advanced mode: the original two-level model menu (model → effort),
       // Codex-style rows: label + current value + chevron, divider, section.
-      '.dsh-rheo-adv-cell-value { flex: none; min-width: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(220,225,238,0.55); }',
+      '.dsh-rheo-adv-cell-value { flex: none; min-width: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(220,225,238,0.55); }',
       '.dsh-rheo-adv-cell-chevron { flex: none; color: rgba(220,225,238,0.45); display: inline-flex; }',
       '.dsh-rheo-adv-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; border-bottom: 1px solid rgba(128,140,160,0.14); margin-bottom: 4px; font-size: 12px; color: rgba(220,225,238,0.6); }',
       '.dsh-rheo-adv-back { display: inline-flex; align-items: center; gap: 4px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; padding: 3px 8px; border-radius: 6px; }',
@@ -1964,6 +1964,12 @@ window.__ModuleLoader__.load({
         draggingRef.current = false
         setDragging(false)
       }
+      // Safety net: if pointer capture is lost (e.g. released outside the
+      // window), reset dragging state so hover doesn't trigger adjustment.
+      const onLostPointerCapture = () => {
+        draggingRef.current = false
+        setDragging(false)
+      }
 
       const noStops = stops.length === 0
       if (noStops && current === null) return null
@@ -1984,7 +1990,7 @@ window.__ModuleLoader__.load({
       const title = noStops
         ? `模型：${triggerName}`
         : `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
-      const THUMB = 17 // half of the whale width; the whale IS the thumb
+      const THUMB = 20 // half of the whale width; the whale IS the thumb
       const fillStyle = noStops ? null : {
         width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
         background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
@@ -2183,11 +2189,12 @@ window.__ModuleLoader__.load({
               {
                 ref: trackRef,
                 className: locked ? 'dsh-rheostat-track dsh-rheostat-locked' : 'dsh-rheostat-track',
-                style: { height: 44, minHeight: 44 },
+                style: { height: 32, minHeight: 32 },
                 onPointerDown,
                 onPointerMove,
                 onPointerUp,
                 onPointerCancel: onPointerUp,
+                onLostPointerCapture,
               },
               react.createElement(
                 'div',
