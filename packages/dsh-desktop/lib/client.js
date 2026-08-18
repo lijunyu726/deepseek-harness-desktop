@@ -1820,22 +1820,31 @@ window.__ModuleLoader__.load({
         if (model === undefined) return []
         const efforts = model.reasoning?.efforts ?? []
         if (efforts.length === 0) return []
-        // Animation speed scales with effort index: lowest = slowest (3.0s),
-        // highest = fastest (1.333s) — same range as DeepSeek's dedicated sprites.
-        const minDur = 1.333
-        const maxDur = 3.0
-        return efforts.map((effort, i) => ({
-          provider: group.id,
-          model: model.id,
-          effort: effort.id,
-          modelName: model.name ?? model.id,
-          effortName: effort.name ?? effort.id,
-          modelLabel: model.name ?? model.id,
-          sprite: 'pro-off',
-          duration: efforts.length > 1
-            ? maxDur - (maxDur - minDur) * (i / (efforts.length - 1))
-            : 2.2,
-        }))
+        // Map DeepSeek sprites to effort tiers so non-DeepSeek models also
+        // get visual variety (not just speed changes).
+        const SPRITE_TIERS = [
+          { sprite: 'flash-off',  duration: 3.0 },
+          { sprite: 'flash-high', duration: 2.2 },
+          { sprite: 'pro-off',    duration: 1.8 },
+          { sprite: 'pro-high',   duration: 1.5 },
+          { sprite: 'pro-max',    duration: 1.333 },
+        ]
+        return efforts.map((effort, i) => {
+          // Map effort index → sprite tier (distribute evenly across tiers).
+          const tier = efforts.length <= 1
+            ? SPRITE_TIERS[0]
+            : SPRITE_TIERS[Math.round(i * (SPRITE_TIERS.length - 1) / (efforts.length - 1))]
+          return {
+            provider: group.id,
+            model: model.id,
+            effort: effort.id,
+            modelName: model.name ?? model.id,
+            effortName: effort.name ?? effort.id,
+            modelLabel: model.name ?? model.id,
+            sprite: tier.sprite,
+            duration: tier.duration,
+          }
+        })
       }, [groups, current])
 
       react.useEffect(() => {
@@ -2826,6 +2835,132 @@ window.__ModuleLoader__.load({
             inject: () => ({ connection, gateway }),
           },
           ModelRheostat,
+        ),
+      )
+
+      // --- File / folder upload button in the input dock area ---
+      function FileUploadButton() {
+        const fileRef = react.useRef(null)
+        const folderRef = react.useRef(null)
+        const [menuOpen, setMenuOpen] = react.useState(false)
+        const menuRef = react.useRef(null)
+
+        react.useEffect(() => {
+          if (!menuOpen) return
+          const onDown = (e) => {
+            if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+          }
+          document.addEventListener('pointerdown', onDown, true)
+          return () => document.removeEventListener('pointerdown', onDown, true)
+        }, [menuOpen])
+
+        const handleFiles = react.useCallback((files) => {
+          if (!files || files.length === 0) return
+          setMenuOpen(false)
+          // Dispatch a custom event that the conversation UI can pick up.
+          // Fallback: directly call the shell's addImages if available.
+          const fileList = Array.from(files)
+          const dt = new DataTransfer()
+          fileList.forEach((f) => dt.items.add(f))
+          // Try to find the hidden image input in the DOM and set its files.
+          const imgInput = document.querySelector('input[type="file"][accept*="image"]')
+          if (imgInput) {
+            const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files').set
+            nativeSet.call(imgInput, dt.files)
+            imgInput.dispatchEvent(new Event('change', { bubbles: true }))
+          } else {
+            // Fallback: trigger via shell's addImages if exposed on window
+            if (typeof window.__dshAddImages === 'function') window.__dshAddImages(fileList)
+          }
+        }, [])
+
+        const btnStyle = {
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: 28, height: 28, borderRadius: 8, border: 'none',
+          background: 'transparent', color: 'rgba(190,200,220,0.7)',
+          cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
+          position: 'relative',
+        }
+        const menuItemStyle = {
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+          padding: '7px 12px', border: 'none', background: 'transparent',
+          color: 'rgba(243,245,250,0.94)', font: 'inherit', fontSize: 13,
+          cursor: 'pointer', borderRadius: 6, textAlign: 'left',
+        }
+
+        return react.createElement('div', { style: { position: 'relative' }, ref: menuRef },
+          react.createElement('button', {
+            type: 'button',
+            style: btnStyle,
+            title: '上传文件',
+            'aria-label': '上传文件',
+            onClick: () => setMenuOpen(!menuOpen),
+            onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(128,140,160,0.16)'; e.currentTarget.style.color = '#F9FAFB' },
+            onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(190,200,220,0.7)' },
+          },
+            // Paperclip icon (simple SVG)
+            react.createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+              react.createElement('path', {
+                d: 'M13.5 7.5L8 13C6.34 14.66 3.66 14.66 2 13C.34 11.34.34 8.66 2 7L8.5.5C9.6-.6 11.4-.6 12.5.5C13.6 1.6 13.6 3.4 12.5 4.5L6 11C5.45 11.55 4.55 11.55 4 11C3.45 10.45 3.45 9.55 4 9L9.5 3.5',
+                stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round',
+              }),
+            ),
+          ),
+          menuOpen && react.createElement('div', {
+            style: {
+              position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, zIndex: 100,
+              minWidth: 160, padding: '4px',
+              background: 'rgba(18,21,30,0.97)', border: '1px solid rgba(128,140,160,0.3)',
+              borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+              backdropFilter: 'blur(16px)',
+            },
+          },
+            react.createElement('button', {
+              type: 'button', style: menuItemStyle,
+              onClick: () => fileRef.current?.click(),
+              onMouseEnter: (e) => e.currentTarget.style.background = 'rgba(128,140,160,0.16)',
+              onMouseLeave: (e) => e.currentTarget.style.background = 'transparent',
+            },
+              react.createElement('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
+                react.createElement('path', { d: 'M7 1v9M3.5 6.5L7 10l3.5-3.5', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+                react.createElement('path', { d: 'M2 10.5v1.5h10v-1.5', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+              ),
+              '上传文件',
+            ),
+            react.createElement('button', {
+              type: 'button', style: menuItemStyle,
+              onClick: () => folderRef.current?.click(),
+              onMouseEnter: (e) => e.currentTarget.style.background = 'rgba(128,140,160,0.16)',
+              onMouseLeave: (e) => e.currentTarget.style.background = 'transparent',
+            },
+              react.createElement('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
+                react.createElement('path', { d: 'M1.5 3.5h4l1.5 2h5.5v7h-11z', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+                react.createElement('path', { d: 'M5 8v3M6.5 9.5H3.5', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+              ),
+              '上传文件夹',
+            ),
+          ),
+          // Hidden file inputs
+          react.createElement('input', {
+            ref: fileRef, type: 'file', multiple: true, style: { display: 'none' },
+            onChange: (e) => handleFiles(e.target.files),
+          }),
+          react.createElement('input', {
+            ref: folderRef, type: 'file', webkitdirectory: '', style: { display: 'none' },
+            onChange: (e) => handleFiles(e.target.files),
+          }),
+        )
+      }
+
+      ctx.slots.inject('conversation.input.dock', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.input.dock',
+            id: 'file-upload-button',
+            priority: -5,
+            inject: () => ({}),
+          },
+          FileUploadButton,
         ),
       )
     }
