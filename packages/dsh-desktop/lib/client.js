@@ -1448,6 +1448,8 @@ window.__ModuleLoader__.load({
 
       const load = react.useCallback(() => gateway.promptHistory(100).then((result) => {
         const next = result && result.ok && Array.isArray(result.items) ? result.items : []
+        // Reverse so newest is at the bottom (bottom-to-top order).
+        next.reverse()
         setItems(next)
         itemsRef.current = next
         return next
@@ -1953,14 +1955,25 @@ window.__ModuleLoader__.load({
       }
       const onPointerDown = (e) => {
         if (locked || busy || stops.length < 2) return
-        try {
-          e.currentTarget.setPointerCapture(e.pointerId)
-        } catch {
-          /* pointer capture is best-effort */
-        }
         draggingRef.current = true
         setDragging(true)
         select(stopFromEvent(e.clientX))
+        // Use document-level listeners as a robust fallback: pointer capture
+        // can silently fail in Electron when the pointer leaves the window.
+        const onDocMove = (ev) => {
+          if (!draggingRef.current) return
+          select(stopFromEvent(ev.clientX))
+        }
+        const onDocUp = () => {
+          draggingRef.current = false
+          setDragging(false)
+          document.removeEventListener('pointermove', onDocMove)
+          document.removeEventListener('pointerup', onDocUp)
+          document.removeEventListener('pointercancel', onDocUp)
+        }
+        document.addEventListener('pointermove', onDocMove)
+        document.addEventListener('pointerup', onDocUp)
+        document.addEventListener('pointercancel', onDocUp)
       }
       const onPointerMove = (e) => {
         if (!draggingRef.current) return
