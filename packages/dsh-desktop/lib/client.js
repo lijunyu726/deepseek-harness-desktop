@@ -1364,16 +1364,18 @@ window.__ModuleLoader__.load({
       // Bare timeline rail: ticks only, no pill shell. z-index stays below
       // the shell's overlay layer (settings panel = 1000), so the rail never
       // floats above settings or other panels.
-      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 3px; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
+      '.dsh-prompt-rail { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: center; gap: 0; padding: 2px 0; background: none; border: none; max-height: 56vh !important; overflow-y: auto !important; scrollbar-width: none; }',
       '.dsh-prompt-rail::-webkit-scrollbar { display: none; }',
-      '.dsh-prompt-rail-tick { display: block; width: 6px; height: 1.5px; border-radius: 999px; background: rgba(190,200,220,0.35); cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background 0.16s ease, opacity 0.16s ease, box-shadow 0.16s ease; }',
-      '.dsh-prompt-rail-tick:hover { background: rgba(255,255,255,0.95); box-shadow: 0 0 6px rgba(120,160,255,0.8); }',
+      // Visual bar 10x2.5px; the padding gives every tick a generous
+      // invisible hit area (~14x12.5px) so selection doesn't need pixel aim.
+      '.dsh-prompt-rail-tick { display: block; box-sizing: border-box; width: 14px; height: 12.5px; padding: 5px 2px; background-clip: content-box; background-color: rgba(190,200,220,0.4); border-radius: 999px; cursor: pointer; transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.16s ease, opacity 0.16s ease; }',
+      '.dsh-prompt-rail-tick:hover { background-color: rgba(255,255,255,0.95); }',
       '.dsh-prompt-rail-pop { position: fixed; z-index: 13; width: min(340px, calc(100vw - 90px)); max-height: 260px; display: flex; flex-direction: column; border: 1px solid rgba(128,140,160,0.34); border-radius: 10px; background: rgba(18,21,30,0.97); box-shadow: 0 12px 36px rgba(0,0,0,0.5); backdrop-filter: blur(16px); animation: dsh-prompt-rail-pop-in 0.14s ease-out; }',
       '.dsh-prompt-rail-pop::before { content: ""; position: absolute; left: -6px; top: 16px; width: 12px; height: 12px; background: rgba(18,21,30,0.97); border-left: 1px solid rgba(128,140,160,0.34); border-bottom: 1px solid rgba(128,140,160,0.34); transform: rotate(45deg); }',
       '@keyframes dsh-prompt-rail-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }',
       '.dsh-prompt-rail-pop-head { display: flex; justify-content: space-between; gap: 10px; padding: 9px 12px 7px; border-bottom: 1px solid rgba(128,140,160,0.16); font-size: 10.5px; color: rgba(220,225,238,0.6); }',
       '.dsh-prompt-rail-pop-text { overflow: auto; padding: 9px 12px 11px; font-size: 12px; line-height: 1.55; color: rgba(243,245,250,0.94); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }',
-      '@media (max-width:700px) { .dsh-prompt-rail { gap: 6px; padding: 2px 2px; } .dsh-prompt-rail-tick { width: 5px; height: 1.5px; } }',
+      '@media (max-width:700px) { .dsh-prompt-rail { padding: 2px 0; } .dsh-prompt-rail-tick { width: 12px; height: 11px; padding: 4px 2px; } }',
     ].join('\n')
 
     let promptHistoryStyleInstalled = false
@@ -1537,8 +1539,10 @@ window.__ModuleLoader__.load({
       const tickStyle = (index) => {
         if (mouseY === null) return null
         const distance = Math.abs(measure.firstTop + index * measure.step - mouseY)
-        const scale = Math.min(1.6, Math.max(1, 1.6 - distance * 0.05))
-        const opacity = Math.min(1, Math.max(0.5, 1 - distance * 0.015))
+        // Wide symmetric dome: the bulge spans ~±2-3 ticks around the cursor,
+        // so the column reads as one regular swell instead of a lone long bar.
+        const scale = Math.min(1.5, Math.max(1, 1.5 - distance * 0.02))
+        const opacity = Math.min(1, Math.max(0.6, 1 - distance * 0.008))
         return { transform: `scaleX(${scale})`, opacity }
       }
       return react.createElement(
@@ -1617,8 +1621,8 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-chevron.open { transform: rotate(180deg); }',
       '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 10px 6px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(46,50,64,0.92); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
       '@keyframes dsh-rheo-pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }',
-      '.dsh-rheo-sea { position: relative; height: 66px; }',
-      '.dsh-rheostat-track { position: absolute; left: 0; right: 0; bottom: 0; height: 32px !important; min-height: 32px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
+      '.dsh-rheo-sea { position: relative; height: 48px; }',
+      '.dsh-rheostat-track { position: absolute; left: 0; right: 0; bottom: 0; height: 36px !important; min-height: 36px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
       '.dsh-rheostat-track:hover { border-color: rgba(130,162,255,0.5); box-shadow: 0 0 0 3px rgba(77,107,254,0.09); }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
       '.dsh-rheostat-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; overflow: hidden !important; transition: width 0.22s ease, background 0.3s ease; }',
@@ -1626,16 +1630,21 @@ window.__ModuleLoader__.load({
       '@keyframes dsh-rheostat-shine { 0% { background-position: 130% 0; } 55%, 100% { background-position: -70% 0; } }',
       '.dsh-rheostat-particle { position: absolute; bottom: 3px; border-radius: 50%; background: rgba(255,255,255,0.92); box-shadow: 0 0 6px rgba(140,180,255,0.9); opacity: 0; pointer-events: none; animation: dsh-particle-rise 2.2s linear infinite; }',
       '@keyframes dsh-particle-rise { 0% { transform: translateY(0) scale(1); opacity: 0; } 12% { opacity: 0.95; } 80% { opacity: 0.45; } 100% { transform: translateY(-18px) scale(0.35); opacity: 0; } }',
-      '.dsh-rheostat-dots { position: absolute; inset: 0; z-index: 2; pointer-events: none; }',
+      // Level dots sit in their own row ABOVE the track, clear of the whale
+      // thumb that now lives inside the track.
+      '.dsh-rheostat-dots { position: absolute; left: 0; right: 0; top: 0; height: 10px; z-index: 2; pointer-events: none; }',
       '.dsh-rheostat-dot { position: absolute; top: 50%; width: 5px; height: 5px; margin-left: -2.5px; transform: translateY(-50%); border-radius: 50%; background: rgba(255,255,255,0.26); transition: background 0.25s ease, box-shadow 0.25s ease; }',
       '.dsh-rheostat-dot.past { background: rgba(255,255,255,0.95); box-shadow: 0 0 5px rgba(120,160,255,0.9); }',
       '.dsh-rheostat-label { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 10.5px; line-height: 1; white-space: nowrap; color: rgba(255,255,255,0.97); background: rgba(36,40,54,0.72); border: 1px solid rgba(255,255,255,0.12); padding: 3px 7px; border-radius: 999px; pointer-events: none; z-index: 4; }',
-      '.dsh-rheostat-whale { position: absolute; top: 0; width: 56px !important; height: 42px !important; z-index: 3; pointer-events: none; transform: translateX(-50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
+      // The whale IS the thumb: it sits inside the track at the current stop
+      // and can be grabbed and dragged to switch stops.
+      '.dsh-rheostat-whale { position: absolute; top: 50%; width: 44px !important; height: 33px !important; z-index: 3; pointer-events: auto; cursor: grab; transform: translate(-50%, -50%) scaleX(-1); transition: left 0.22s ease; filter: drop-shadow(0 2px 3px rgba(8,16,32,0.45)) drop-shadow(0 0 8px rgba(122,172,255,0.45)); }',
+      '.dsh-rheostat-whale.dragging { cursor: grabbing; }',
       '.dsh-rheostat-whale-inner { position: absolute; inset: 0; animation: dsh-whale-state-in 0.18s ease-out both; }',
       '.dsh-rheostat-whale-bob { position: absolute; inset: 0; animation: dsh-whale-bob var(--sprite-duration, 2.4s) ease-in-out infinite; }',
       '.dsh-rheostat-whale-frame { position: absolute; inset: 0; display: block; background-repeat: no-repeat; background-size: 600% 400%; background-position: 0% 0%; animation: dsh-whale-sprite var(--sprite-duration, 2.4s) step-end infinite; }',
       '@keyframes dsh-whale-state-in { from { opacity: 0.25; transform: scale(0.82); } to { opacity: 1; transform: scale(1); } }',
-      '@keyframes dsh-whale-bob { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(2px); } }',
+      '@keyframes dsh-whale-bob { 0%, 100% { transform: translateY(-1.5px); } 50% { transform: translateY(1.5px); } }',
       '@keyframes dsh-whale-sprite {',
       '  0% { background-position: 0% 0%; }',
       '  4.1667% { background-position: 20% 0%; }',
@@ -1845,7 +1854,7 @@ window.__ModuleLoader__.load({
       const stop = stops[idx]
       const shortName = `${stop.modelLabel} · ${stop.effortName}`
       const title = `模型与思考强度：${stop.modelName} · 推理 ${stop.effortName}（点击展开调整）`
-      const THUMB = 28 // half of the whale width, keeps the swimmer above the track
+      const THUMB = 22 // half of the whale width; the whale IS the thumb
       const fillStyle = {
         width: `calc(${THUMB}px + (100% - ${THUMB}px) * ${level})`,
         background: `linear-gradient(90deg, hsl(212, 92%, 61%), hsl(${227 + Math.round(level * 8)}, 88%, 63%))`,
@@ -1855,7 +1864,7 @@ window.__ModuleLoader__.load({
         '--sprite-duration': `${stop.duration}s`,
       }
       // Level ticks: every stop keeps a visible dot (past = lit, future =
-      // dim); the whale floats above the track, so the dots stay readable.
+      // dim) in a row ABOVE the track, clear of the whale thumb.
       const dots = stops.map((_, index) => react.createElement('span', {
         key: index,
         className: `dsh-rheostat-dot${index < idx ? ' past' : ''}`,
@@ -1866,6 +1875,12 @@ window.__ModuleLoader__.load({
         { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
         react.createElement('path', { d: 'M3.5 5.5 7 9l3.5-3.5', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }),
       )
+      // Grabbing the whale starts a drag; stopPropagation keeps the track's
+      // own pointerdown (bubbled) from firing a duplicate select.
+      const onWhalePointerDown = (event) => {
+        event.stopPropagation()
+        onPointerDown(event)
+      }
       return react.createElement(
         'div',
         { className: 'dsh-rheostat', title, ref: rootRef },
@@ -1889,29 +1904,13 @@ window.__ModuleLoader__.load({
           react.createElement(
             'div',
             { className: 'dsh-rheo-sea' },
-            react.createElement(
-              'span',
-              {
-                key: `${stop.model}:${stop.effort}`,
-                className: 'dsh-rheostat-whale',
-                style: whaleStyle,
-              },
-              react.createElement('span', { className: 'dsh-rheostat-whale-inner' },
-                react.createElement('span', { className: 'dsh-rheostat-whale-bob' },
-                  react.createElement('span', {
-                    className: 'dsh-rheostat-whale-frame',
-                    'aria-hidden': true,
-                    style: { backgroundImage: `url("${whaleSpriteUrl(stop.sprite)}")` },
-                  }),
-                ),
-              ),
-            ),
+            react.createElement('span', { className: 'dsh-rheostat-dots', 'aria-hidden': true }, dots),
             react.createElement(
               'div',
               {
                 ref: trackRef,
                 className: locked ? 'dsh-rheostat-track dsh-rheostat-locked' : 'dsh-rheostat-track',
-                style: { height: 32, minHeight: 32 },
+                style: { height: 36, minHeight: 36 },
                 onPointerDown,
                 onPointerMove,
                 onPointerUp,
@@ -1934,8 +1933,26 @@ window.__ModuleLoader__.load({
                   },
                 })),
               ),
-              react.createElement('span', { className: 'dsh-rheostat-dots', 'aria-hidden': true }, dots),
               react.createElement('span', { className: 'dsh-rheostat-label' }, shortName),
+              react.createElement(
+                'span',
+                {
+                  key: `${stop.model}:${stop.effort}`,
+                  className: `dsh-rheostat-whale${dragging ? ' dragging' : ''}`,
+                  style: whaleStyle,
+                  title: '拖动鲸鱼切换档位',
+                  onPointerDown: onWhalePointerDown,
+                },
+                react.createElement('span', { className: 'dsh-rheostat-whale-inner' },
+                  react.createElement('span', { className: 'dsh-rheostat-whale-bob' },
+                    react.createElement('span', {
+                      className: 'dsh-rheostat-whale-frame',
+                      'aria-hidden': true,
+                      style: { backgroundImage: `url("${whaleSpriteUrl(stop.sprite)}")` },
+                    }),
+                  ),
+                ),
+              ),
             ),
           ),
         ),

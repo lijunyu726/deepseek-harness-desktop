@@ -26,7 +26,7 @@ Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测
 
 ### 历史 Prompt
 
-宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘（抽屉右侧，Codex 式，由 composer 卡片的宽祖先元素测得 pane 左缘）的裸刻度时间轴（无胶囊外壳，刻度 6×1.5px）：每条 Prompt 一根刻度（最新在最上）。鱼眼扩散是**连续的**：轨道 `mousemove` 持续上报鼠标 Y，每根刻度按自身中心与光标的**像素距离**计算缩放（最近 1.6 倍、随距离线性衰减、**下限钳在 1.0**——远离光标的刻度永远不比默认短），配合 `cubic-bezier(0.22,1,0.36,1)` 过渡形成 Dock 式丝滑跟随；刻度几何（首根中心 + 间距）在挂载/条目变化/滚动/窗口缩放时重测。悬停时右侧弹出预览气泡（跟随最近刻度），点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层（1000），打开面板时不会压在其上。桌面与手机连接同一服务，因此天然共享历史。
+宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘（抽屉右侧，Codex 式，由 composer 卡片的宽祖先元素测得 pane 左缘）的裸刻度时间轴（无胶囊外壳）：每条 Prompt 一根刻度（最新在最上），可视横条 10×2.5px、外层 padding 构成 14×12.5px 的隐形点击区（`background-clip: content-box`），好点中但视觉依旧纤细。鱼眼扩散是**连续的**：轨道 `mousemove` 持续上报鼠标 Y，每根刻度按自身中心与光标的**像素距离**计算缩放（峰值 1.5 倍、0.02/px 线性衰减成 ±2~3 根的对称圆顶、**下限钳在 1.0**——远离光标的刻度永远不比默认短），配合 `cubic-bezier(0.22,1,0.36,1)` 过渡形成 Dock 式丝滑跟随；刻度几何（首根中心 + 间距）在挂载/条目变化/滚动/窗口缩放时重测。悬停时右侧弹出预览气泡（跟随最近刻度），点击通过标准 `inputActions.setDraft()` 恢复文本；没有旁路操作 textarea 或输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层（1000），打开面板时不会压在其上。桌面与手机连接同一服务，因此天然共享历史。
 
 ### 局域网可信名单自愈
 
@@ -38,7 +38,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 每档拥有独立的透明底 24 帧动画，运行时素材为 `lib/whale-sprites/*.webp` 下的 1056×512 无损 WebP（6×4 网格，单格 176×128）。宿主 `lib/whale-sprites.js` 在 `/dsh-desktop/whale-sprites/<state>.webp` 注册六个精确同源路由，浏览器端预加载后以 CSS `background-position` 播放；切档通过 React key 重启动画，系统开启“减少动态效果”时停在首帧。Flash 三档保持轻快，Pro 三档的动作语义更强，避免 Flash·Max 比 Pro 更努力。
 
-视觉层：鲸鱼整体 `scaleX(-1)` 翻转，使朝向（右）与档位递增方向一致；鲸鱼 56×42 半浸在轨道上沿（`dsh-rheo-sea` 固定高度容器，轨道绝对定位贴底，避免外边距折叠），位置与填充宽度都以 `THUMB=28` 为基准，满档时填充恰好 100%。填充用蓝系渐变（hue 212→235，不含紫色），内含流光扫过层与随档位增多的星尘粒子（2→8 颗，伪随机种子按档位稳定）；轨道上按档位等距渲染 6 个圆点刻度（已过档位点亮，鲸鱼只没入轨道上沿不遮挡圆点）。弹层背景为提亮的磨砂玻璃（rgba(46,50,64,0.92) + blur 20px）。轨道高度用 `!important` 加固，避免第三方注入的全局样式压扁布局。
+视觉层：鲸鱼整体 `scaleX(-1)` 翻转，使朝向（右）与档位递增方向一致；**鲸鱼就是滑块拇指**——44×33 渲染在轨道内部、位置即当前档位（`THUMB=22` 基准），`pointer-events: auto` + `cursor: grab/grabbing`，按下鲸鱼拖动即可切换档位（stopPropagation 避免与轨道的 pointerdown 重复触发）；点击轨道空白处仍可直接跳档。档位圆点移到轨道上方的独立一行（`dsh-rheo-sea` 48px：圆点行 10px + 轨道 36px），鲸鱼不再遮挡。填充用蓝系渐变（hue 212→235，不含紫色），内含流光扫过层与随档位增多的星尘粒子（2→8 颗，伪随机种子按档位稳定）；满档时填充恰好 100%。弹层背景为提亮的磨砂玻璃（rgba(46,50,64,0.92) + blur 20px）。轨道高度用 `!important` 加固，避免第三方注入的全局样式压扁布局。
 
 ### @会话提及
 

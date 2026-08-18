@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "1.2.25",
+  "version": "1.2.26",
   "private": true,
   "description": "DeepSeek Harness desktop shell for macOS (Electron wrapper around the dsh web server)",
   "author": "DeepSeek",
