@@ -1621,11 +1621,11 @@ window.__ModuleLoader__.load({
       '.dsh-rheo-chevron.open { transform: rotate(180deg); }',
       '.dsh-rheo-pop { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 30; width: 300px; padding: 12px 8px; border: 1px solid rgba(128,140,160,0.3); border-radius: 16px; background: rgba(46,50,64,0.92); box-shadow: 0 16px 44px rgba(0,0,0,0.45); backdrop-filter: blur(20px); animation: dsh-rheo-pop-in 0.16s ease-out; }',
       '@keyframes dsh-rheo-pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }',
-      // Codex-style panel header: "高级 >" entry on the left, bolt on the right.
-      '.dsh-rheo-head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 8px; }',
-      '.dsh-rheo-head-link { display: inline-flex; align-items: center; gap: 4px; border: none; background: rgba(128,140,160,0.16); color: rgba(232,236,246,0.92); font: inherit; font-size: 12.5px; cursor: pointer; padding: 4px 10px; border-radius: 999px; }',
-      '.dsh-rheo-head-link:hover { background: rgba(103,158,254,0.28); color: #fff; }',
-      '.dsh-rheo-bolt { display: inline-flex; color: rgba(220,225,238,0.65); }',
+      // 高级 accordion toggle (triangle rotates when expanded).
+      '.dsh-rheo-adv-toggle { display: flex; align-items: center; gap: 6px; width: 100%; border: none; background: transparent; color: rgba(232,236,246,0.9); font: inherit; font-size: 12.5px; cursor: pointer; padding: 2px 6px 8px; text-align: left; }',
+      '.dsh-rheo-adv-toggle:hover { color: #fff; }',
+      '.dsh-rheo-adv-tri { display: inline-flex; color: rgba(220,225,238,0.55); transition: transform 0.15s ease; }',
+      '.dsh-rheo-adv-toggle.open .dsh-rheo-adv-tri { transform: rotate(90deg); }',
       '.dsh-rheostat-track { position: relative; width: 100%; height: 44px !important; min-height: 44px !important; border-radius: 999px; background: rgba(128,140,160,0.15); border: 1px solid rgba(128,140,160,0.26); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; transition: border-color 0.2s ease, box-shadow 0.2s ease; }',
       '.dsh-rheostat-track:hover { border-color: rgba(130,162,255,0.5); box-shadow: 0 0 0 3px rgba(77,107,254,0.09); }',
       '.dsh-rheostat-track.dsh-rheostat-locked { cursor: default; opacity: 0.55; }',
@@ -1654,10 +1654,6 @@ window.__ModuleLoader__.load({
       // Codex-style rows: label + current value + chevron, divider, section.
       '.dsh-rheo-adv-cell-value { flex: none; min-width: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(220,225,238,0.55); }',
       '.dsh-rheo-adv-cell-chevron { flex: none; color: rgba(220,225,238,0.45); display: inline-flex; }',
-      '.dsh-rheo-adv-divider { border-top: 1px solid rgba(128,140,160,0.16); margin: 6px 2px 4px; }',
-      '.dsh-rheo-adv-section { padding: 6px 12px 2px; font-size: 11px; letter-spacing: 0.4px; color: rgba(220,225,238,0.38); }',
-      '.dsh-rheo-adv-switch { width: 100%; height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: none; background: transparent; border-radius: 10px; color: rgba(220,225,238,0.62); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }',
-      '.dsh-rheo-adv-switch:hover { background: rgba(77,107,254,0.14); color: #B8C8FF; }',
       '.dsh-rheo-adv-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; border-bottom: 1px solid rgba(128,140,160,0.14); margin-bottom: 4px; font-size: 12px; color: rgba(220,225,238,0.6); }',
       '.dsh-rheo-adv-back { display: inline-flex; align-items: center; gap: 4px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; padding: 3px 8px; border-radius: 6px; }',
       '.dsh-rheo-adv-back:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,140,160,0.16)); }',
@@ -1730,41 +1726,34 @@ window.__ModuleLoader__.load({
       return `${WHALE_SPRITE_BASE}/${sprite}.webp`
     }
 
-    function ModelRheostat({ sessionId, locked, connection, gateway }) {
+    function ModelRheostat({ sessionId, locked, connection }) {
       const [groups, setGroups] = react.useState(null)
       const [current, setCurrent] = react.useState(null)
       const [busy, setBusy] = react.useState(false)
       const [dragging, setDragging] = react.useState(false)
       const [expanded, setExpanded] = react.useState(false)
+      // One popover, two layers: the slider by default; the 高级 accordion
+      // (supplier → model → effort) on top of it.
+      const [advancedOpen, setAdvancedOpen] = react.useState(false)
+      const [pane, setPane] = react.useState(null)
+      const [supplier, setSupplier] = react.useState(null)
       const trackRef = react.useRef(null)
       const rootRef = react.useRef(null)
 
-      // Two forms: the whale rheostat (default) and the advanced two-level
-      // model menu (model → reasoning effort), toggled from the chip and
-      // persisted host-side so desktop and phone share the preference.
-      const [mode, setMode] = react.useState('rheostat')
-      const [pane, setPane] = react.useState('root')
+      // When the current session model changes, follow its provider as the
+      // active supplier filter.
       react.useEffect(() => {
-        if (typeof gateway?.desktopConfig !== 'function') return
-        gateway.desktopConfig().then((r) => {
-          const stored = r?.value?.config?.modelMode
-          if (stored === 'advanced' || stored === 'rheostat') setMode(stored)
-        }).catch(() => {})
-      }, [gateway])
-      const toggleMode = react.useCallback(() => {
-        setMode((currentMode) => {
-          const next = currentMode === 'rheostat' ? 'advanced' : 'rheostat'
-          if (typeof gateway?.saveDesktopConfig === 'function') {
-            gateway.saveDesktopConfig({ modelMode: next }).catch(() => {})
-          }
-          return next
-        })
-        setPane('root')
+        if (current !== null) setSupplier(current.provider)
+      }, [current])
+
+      const openPopover = react.useCallback(() => {
+        setPane(null)
         setExpanded(true)
-      }, [gateway])
+      }, [])
 
       // Collapsed by default: the seat shows a chip identical to the shell's
-      // default model trigger; clicking it opens the active form's popover.
+      // default model trigger; clicking it opens the popover (always on the
+      // outermost view).
       react.useEffect(() => {
         if (!expanded) return
         const onPointerDown = (event) => {
@@ -1900,13 +1889,14 @@ window.__ModuleLoader__.load({
       }, [stops, busy, sessionId, connection])
 
       // Advanced-mode actions: switch the session model or its effort through
-      // the same official session.selectModel wire as the shell's menu.
+      // the same official session.selectModel wire as the shell's menu. After
+      // a pick the menu returns to the root view — it never closes.
       const chooseModel = react.useCallback((provider, modelId) => {
         const group = (groups ?? []).find((g) => g.id === provider)
         const model = group?.models?.find((m) => m.id === modelId)
         if (model === undefined) return
         if (current?.provider === provider && current?.model === modelId) {
-          setExpanded(false)
+          setPane(null)
           return
         }
         const effort = model.reasoning?.defaultEffort ?? model.reasoning?.efforts?.[0]?.id
@@ -1920,7 +1910,8 @@ window.__ModuleLoader__.load({
           setBusy(false)
           if (r && r.result && r.result.ok) {
             setCurrent(r.result.value.selected ?? null)
-            setExpanded(false)
+            setSupplier(provider)
+            setPane(null)
           }
         }).catch(() => setBusy(false))
       }, [groups, current, busy, sessionId, connection])
@@ -1928,7 +1919,7 @@ window.__ModuleLoader__.load({
       const chooseEffort = react.useCallback((effortId) => {
         if (current === null) return
         if (current.reasoningEffort === effortId) {
-          setExpanded(false)
+          setPane(null)
           return
         }
         setBusy(true)
@@ -1941,7 +1932,7 @@ window.__ModuleLoader__.load({
           setBusy(false)
           if (r && r.result && r.result.ok) {
             setCurrent(r.result.value.selected ?? null)
-            setExpanded(false)
+            setPane(null)
           }
         }).catch(() => setBusy(false))
       }, [current, busy, sessionId, connection])
@@ -2019,58 +2010,81 @@ window.__ModuleLoader__.load({
         { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
         react.createElement('path', { d: 'M2.5 7.5 5.5 10.5 11.5 4', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }),
       )
-      const boltIcon = react.createElement(
-        'svg',
-        { width: 13, height: 13, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
-        react.createElement('path', { d: 'M8 1.5 3 8h3.2L6 12.5 11 6H7.8L8 1.5z', fill: 'currentColor' }),
-      )
       const currentEffortName = (() => {
         if (current === null) return ''
         const efforts = currentModel?.reasoning?.efforts ?? []
         return efforts.find((e) => e.id === current.reasoningEffort)?.name ?? current.reasoningEffort ?? ''
       })()
-      // Advanced mode: the original two-level model menu (model → effort),
-      // Codex-style: label + value rows, divider, muted 高级 section.
-      const advancedContent = mode !== 'advanced' ? null : (() => {
-        const foot = react.createElement(react.Fragment, null,
-          react.createElement('div', { className: 'dsh-rheo-adv-divider' }),
-          react.createElement('div', { className: 'dsh-rheo-adv-section' }, '高级'),
-          react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-switch', onClick: toggleMode }, '鲸鱼变阻器'),
-        )
-        if (pane === 'model') {
+      const supplierGroup = (() => {
+        const id = supplier ?? current?.provider ?? null
+        return (groups ?? []).find((g) => g.id === id) ?? null
+      })()
+      const supplierName = supplierGroup?.name ?? supplierGroup?.id ?? '—'
+      // The 高级 accordion: collapsed → the slider; expanded → supplier /
+      // model / effort rows; sub-panes return to the rows after a pick.
+      const advancedContent = (() => {
+        if (pane === 'supplier') {
           return react.createElement('div', { className: 'dsh-rheo-adv' },
             react.createElement('div', { className: 'dsh-rheo-adv-head' },
-              react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-back', onClick: () => setPane('root') }, '‹ 返回'),
-              react.createElement('span', null, '选择模型'),
+              react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-back', onClick: () => setPane(null) }, '‹ 返回'),
+              react.createElement('span', null, '模型供应商'),
             ),
             react.createElement('div', { className: 'dsh-rheo-adv-groups' },
-              (groups ?? []).map((group) => react.createElement('div', { key: group.id },
-                react.createElement('div', { className: 'dsh-rheo-adv-group-title' }, group.name ?? group.id),
-                (group.models ?? []).map((model) => {
-                  const selected = current !== null && current.provider === group.id && current.model === model.id
-                  return react.createElement('button', {
-                    key: model.id,
-                    type: 'button',
-                    className: 'dsh-rheo-adv-option',
-                    disabled: busy,
-                    onClick: () => chooseModel(group.id, model.id),
+              (groups ?? []).map((group) => {
+                const selected = supplier === group.id
+                return react.createElement('button', {
+                  key: group.id,
+                  type: 'button',
+                  className: 'dsh-rheo-adv-option',
+                  onClick: () => {
+                    setSupplier(group.id)
+                    setPane('model')
                   },
-                    react.createElement('span', { className: 'dsh-rheo-adv-option-copy' },
-                      react.createElement('span', { className: 'dsh-rheo-adv-option-name' }, model.name ?? model.id),
-                      model.description !== undefined && react.createElement('span', { className: 'dsh-rheo-adv-option-desc' }, model.description),
-                    ),
-                    react.createElement('span', { className: 'dsh-rheo-adv-check' }, selected ? checkIcon : null),
-                  )
-                }),
-              )),
+                },
+                  react.createElement('span', { className: 'dsh-rheo-adv-option-copy' },
+                    react.createElement('span', { className: 'dsh-rheo-adv-option-name' }, group.name ?? group.id),
+                  ),
+                  react.createElement('span', { className: 'dsh-rheo-adv-check' }, selected ? checkIcon : null),
+                )
+              }),
             ),
+          )
+        }
+        if (pane === 'model') {
+          const group = supplierGroup ?? (groups ?? [])[0] ?? null
+          const models = group?.models ?? []
+          return react.createElement('div', { className: 'dsh-rheo-adv' },
+            react.createElement('div', { className: 'dsh-rheo-adv-head' },
+              react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-back', onClick: () => setPane(null) }, '‹ 返回'),
+              react.createElement('span', null, `选择模型 · ${group?.name ?? ''}`),
+            ),
+            models.length === 0
+              ? react.createElement('div', { style: { padding: '14px', fontSize: '12px', color: 'rgba(220,225,238,0.6)' } }, '该供应商暂无模型。')
+              : react.createElement('div', { className: 'dsh-rheo-adv-groups' },
+                  models.map((model) => {
+                    const selected = current !== null && current.provider === group.id && current.model === model.id
+                    return react.createElement('button', {
+                      key: model.id,
+                      type: 'button',
+                      className: 'dsh-rheo-adv-option',
+                      disabled: busy,
+                      onClick: () => chooseModel(group.id, model.id),
+                    },
+                      react.createElement('span', { className: 'dsh-rheo-adv-option-copy' },
+                        react.createElement('span', { className: 'dsh-rheo-adv-option-name' }, model.name ?? model.id),
+                        model.description !== undefined && react.createElement('span', { className: 'dsh-rheo-adv-option-desc' }, model.description),
+                      ),
+                      react.createElement('span', { className: 'dsh-rheo-adv-check' }, selected ? checkIcon : null),
+                    )
+                  }),
+                ),
           )
         }
         if (pane === 'effort') {
           const efforts = currentModel?.reasoning?.efforts ?? []
           return react.createElement('div', { className: 'dsh-rheo-adv' },
             react.createElement('div', { className: 'dsh-rheo-adv-head' },
-              react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-back', onClick: () => setPane('root') }, '‹ 返回'),
+              react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-back', onClick: () => setPane(null) }, '‹ 返回'),
               react.createElement('span', null, `思考强度 · ${triggerName}`),
             ),
             efforts.length === 0
@@ -2094,7 +2108,13 @@ window.__ModuleLoader__.load({
                 ),
           )
         }
+        // Root of the expanded accordion: 模型供应商 / 模型 / 思考强度.
         return react.createElement('div', { className: 'dsh-rheo-adv' },
+          react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-cell', onClick: () => setPane('supplier') },
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-label' }, '模型供应商'),
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-value' }, supplierName),
+            react.createElement('span', { className: 'dsh-rheo-adv-cell-chevron' }, chevronRight),
+          ),
           react.createElement('button', { type: 'button', className: 'dsh-rheo-adv-cell', onClick: () => setPane('model') },
             react.createElement('span', { className: 'dsh-rheo-adv-cell-label' }, '模型'),
             react.createElement('span', { className: 'dsh-rheo-adv-cell-value' }, triggerName),
@@ -2105,7 +2125,6 @@ window.__ModuleLoader__.load({
             react.createElement('span', { className: 'dsh-rheo-adv-cell-value' }, currentEffortName || '—'),
             react.createElement('span', { className: 'dsh-rheo-adv-cell-chevron' }, chevronRight),
           ),
-          foot,
         )
       })()
       // Grabbing the whale starts a drag; stopPropagation keeps the track's
@@ -2125,7 +2144,7 @@ window.__ModuleLoader__.load({
             'aria-haspopup': 'dialog',
             'aria-expanded': expanded,
             disabled: locked,
-            onClick: () => setExpanded((value) => !value),
+            onClick: () => expanded ? setExpanded(false) : openPopover(),
           },
           react.createElement('span', { className: 'dsh-rheo-trigger-label' }, triggerName),
           triggerEffort !== '' && react.createElement('span', { className: 'dsh-rheo-trigger-effort' }, triggerEffort),
@@ -2134,7 +2153,19 @@ window.__ModuleLoader__.load({
         expanded && react.createElement(
           'div',
           { className: 'dsh-rheo-pop', role: 'dialog', 'aria-label': '模型与思考强度调节' },
-          mode === 'advanced'
+          // 高级 accordion toggle: collapsed → slider, expanded → rows.
+          react.createElement(
+            'button',
+            {
+              type: 'button',
+              className: `dsh-rheo-adv-toggle${advancedOpen ? ' open' : ''}`,
+              'aria-expanded': advancedOpen,
+              onClick: () => setAdvancedOpen((value) => !value),
+            },
+            react.createElement('span', { className: 'dsh-rheo-adv-tri', 'aria-hidden': true }, chevronRight),
+            react.createElement('span', null, '高级'),
+          ),
+          advancedOpen
             ? advancedContent
             : noStops
               ? react.createElement(
@@ -2143,17 +2174,6 @@ window.__ModuleLoader__.load({
                 `当前模型「${triggerName}」不支持推理档位调节。`,
               )
               : react.createElement(
-              react.Fragment,
-              null,
-              // Codex-style panel header: 高级 > entry (switches to the model
-              // menu) on the left, bolt on the right.
-              react.createElement(
-                'div',
-                { className: 'dsh-rheo-head' },
-                react.createElement('button', { type: 'button', className: 'dsh-rheo-head-link', onClick: toggleMode }, '高级', chevronRight),
-                react.createElement('span', { className: 'dsh-rheo-bolt', 'aria-hidden': true }, boltIcon),
-              ),
-              react.createElement(
               'div',
               {
                 ref: trackRef,
@@ -2201,7 +2221,6 @@ window.__ModuleLoader__.load({
                   ),
                 ),
               ),
-            ),
             ),
           ),
       )
