@@ -106,6 +106,24 @@ const patchedAdmission = `\t\t\t\tconst admit = async () => {
 \t\t\t\t\t\t\tsource
 \t\t\t\t\t\t});`
 
+/** The v1.3.0+ file-block enhancement rewrites the admission body's message construction; both bodies are complete. */
+const patchedAdmissionWithFileBlocks = `\t\t\t\tconst admit = async () => {
+\t\t\t\t\ttry {
+\t\t\t\t\t\tlet delegateToVisionMcp = false;
+\t\t\t\t\t\tif (hasImage) {
+\t\t\t\t\t\t\tconst current = selectionFor(agent).current;
+\t\t\t\t\t\t\tconst modelInfo = await ctx.llm.resolveModelInfo(current.provider, current.model);
+\t\t\t\t\t\t\tdelegateToVisionMcp = !modelInfo.inputModalities?.includes("image");
+\t\t\t\t\t\t}
+\t\t\t\t\t\tsignal?.throwIfAborted();
+\t\t\t\t\t\tconst durableContent = await durablePromptContent(ctx, content);
+\t\t\t\t\t\tsignal?.throwIfAborted();
+\t\t\t\t\t\tconst modelContent = delegateToVisionMcp ? desktopVisionMcpContent(ctx, durableContent) : durableContent;
+\t\t\t\t\t\tconst message = createUserMessage({
+\t\t\t\t\t\t\tcontent: desktopFileContent(modelContent),
+\t\t\t\t\t\t\tsource
+\t\t\t\t\t\t});`
+
 const originalRoute = `\t\tinvoke: (api, r) => api.sessions.prompt(r)`
 const patchedRoute = `\t\tinvoke: (api, r, signal) => api.sessions.prompt(r, signal)`
 
@@ -182,7 +200,7 @@ function replaceOnce(source, before, after, label) {
 
 let source = await readFile(target, 'utf8')
 if (source.includes(marker)) {
-  if (!source.includes(patchedPrompt) || !source.includes(patchedAdmission) || !source.includes(patchedRoute)) {
+  if (!source.includes(patchedPrompt) || (!source.includes(patchedAdmission) && !source.includes(patchedAdmissionWithFileBlocks)) || !source.includes(patchedRoute)) {
     throw new Error(`vision MCP bridge marker exists but ${target} is only partially patched`)
   }
   // The delegation body changed in 1.2.2 (keep the image block + append the

@@ -36,6 +36,26 @@ const MAX_CONTENT_BYTES = 256 * 1024
 const PROMPT_HISTORY_LIMIT = 100
 const MAX_PROMPT_BYTES = 64 * 1024
 
+/**
+ * Settle `promise` within `ms`, or reject with `message`; a late result is
+ * swallowed so the race loser never becomes an unhandled rejection. Session
+ * deletion uses this so a hung agent teardown can never freeze the RPC —
+ * the settings dialog must always settle.
+ */
+function raceDeadline(promise, ms, message) {
+  const tracked = Promise.resolve(promise)
+  tracked.catch(() => {})
+  let timer
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+  })
+  return Promise.race([tracked, deadline]).finally(() => clearTimeout(timer))
+}
+
+/** Upper bounds for one agent teardown inside settings-page session deletion. */
+const DELETE_AGENT_IDLE_TIMEOUT_MS = 5000
+const DELETE_AGENT_DISPOSE_TIMEOUT_MS = 5000
+
 /** Prompt history is private user data, shared by desktop and mobile clients. */
 function promptHistoryPath() {
   const home = process.env.DSH_HOME?.trim() || path.join(homedir(), '.dsh')
@@ -563,6 +583,7 @@ markRemote('balance')
 markRemote('usage')
 markRemote('promptHistory')
 markRemote('unarchiveSession')
+markRemote('deleteSessions')
 markRemote('listSessionCandidates')
 markRemote('desktopConfig')
 markRemote('saveDesktopConfig')
@@ -847,6 +868,67 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
       }
       await registry.unarchiveSession(id)
       return { ok: true, archivedSessionIds: [...registry.archivedSessionIds] }
+    } catch (err) {
+      return { ok: false, error: String(err?.message ?? err) }
+    }
+  }
+
+  /**
+   * Permanently delete one or more sessions (single id or batch) from the
+   * settings → 归档管理 page. Mirrors the workspace delete handler's
+   * teardown so the two paths behave identically: flush the attached
+   * session (best effort — a ghost's log is already gone and flushing may
+   * ENOENT), cancel and drain the live agent under deadlines, purge the
+   * durable log through the workspace registry, then force-remove any
+   * residual live registrations. Every step settles or times out, so the
+   * dialog can never freeze on "正在删除…" and a deleted session can never
+   * linger in the sidebar as a ghost.
+   * @param sessionIds - one session id or an array of session ids.
+   * @returns per-id results plus the current archive set.
+   */
+  async deleteSessions(sessionIds) {
+    try {
+      const registry = this.ctx.get('workspaceRegistry')
+      if (registry === undefined) return { ok: false, error: 'workspaceRegistry 服务不可用' }
+      const sessions = this.ctx.get('sessions')
+      const agents = this.ctx.agents
+      const ids = (Array.isArray(sessionIds) ? sessionIds : [sessionIds])
+        .map((id) => String(id ?? ''))
+        .filter((id) => id.length > 0)
+      if (ids.length === 0) return { ok: false, error: '缺少会话 id' }
+      const results = []
+      for (const id of ids) {
+        try {
+          const attached = sessions === undefined ? undefined : sessions.get(id)
+          if (attached !== undefined) {
+            try {
+              await sessions.flush(attached)
+            } catch (flushError) {
+              // Ghost session: the durable log is already gone. Keep going —
+              // the delete must still purge the registries and records.
+            }
+          }
+          const live = agents.get(id)
+          if (live !== undefined) {
+            try { live.cancel({ kind: 'disposed' }) } catch {}
+            try {
+              await raceDeadline(live.whenIdle(), DELETE_AGENT_IDLE_TIMEOUT_MS, `agent "${id}" did not go idle`)
+            } catch {}
+            try {
+              if (typeof live.scope?.dispose === 'function') {
+                await raceDeadline(live.scope.dispose(), DELETE_AGENT_DISPOSE_TIMEOUT_MS, `agent "${id}" scope dispose timed out`)
+              }
+            } catch {}
+          }
+          await registry.deleteSession(id)
+          try { agents.remove?.(id) } catch {}
+          try { sessions?.remove?.(id) } catch {}
+          results.push({ id, ok: true })
+        } catch (err) {
+          results.push({ id, ok: false, error: String(err?.message ?? err) })
+        }
+      }
+      return { ok: true, results, archivedSessionIds: [...registry.archivedSessionIds] }
     } catch (err) {
       return { ok: false, error: String(err?.message ?? err) }
     }

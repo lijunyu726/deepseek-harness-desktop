@@ -46,18 +46,25 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 ## 视觉桥
 
-`scripts/apply-vision-bridge.mjs` 确定性地给 rc.6 依赖打补丁：图片消息经附件存储落地后替换为对 `mcp__vision__describe_image` 的文本指令（文本模型照常调用工具回路取回文字描述）；原生支持图片的模型不经过桥。脚本要求锚点精确匹配，依赖升级导致锚点消失时报错而不是静默半补丁。
+`scripts/apply-vision-bridge.mjs` 确定性地给 rc.6 依赖打补丁：图片消息经附件存储落地后替换为对 `mcp__vision__describe_image` 的文本指令（文本模型照常调用工具回路取回文字描述）；原生支持图片的模型不经过桥。脚本要求锚点精确匹配，依赖升级导致锚点消失时报错而不是静默半补丁。v1.3.0 起上传补丁改写了 admission 消息体（`desktopFileContent`），脚本的完整性校验同时接受经典与文件块两种完整形态。
 
 ## 上传增强（v1.3.0）
 
-三个上游包（conversation / apiproxy / web-frontend）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。
+四个上游包（conversation / apiproxy / workspace 客户端 / web-frontend）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。
 
 - **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器。
-- **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明。
+- **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
+- **workspace 客户端补丁**：删除工作区后立即 `ctx.sessions.refresh()` 收敛冷会话；删除确认弹窗文案改为「永久删除其中全部会话与聊天记录，不可恢复」。
 - **web-frontend 补丁**：AttachmentRail 非图片附件渲染文件图标（安装脚本按 `dist/index.html` 动态解析哈希文件名）。
 - **插件（packages/dsh-desktop）**：`saveUploadFile`（base64 → `~/.dsh/sessions/<项目>/<会话ID>/uploads/`，找不到会话目录回退 `~/.dsh/uploads/<会话ID>/`）、`copyFolderUpload`（整体递归复制，2000 文件/200MB/深度 8）、`pickFolderNative`/`resolvePickFolder`（主进程原生目录选择器桥）、`getFileIcon`/`resolveFileIcon`（macOS 图标桥）；客户端侧纯上传菜单、`SessionIdTracker`、`__DSH_SAVE_UPLOAD__`/`__DSH_GET_FILE_ICON__` 页面桥、ESC 编辑状态机。
 - **主进程（main/main.mjs）**：`pick-folder` 与 `file-icon` 两种 desktop-event 处理（dialog.showOpenDialog / app.getFileIcon → `executeJavaScript` 回注）。
 - **生命周期**：附件字节在会话目录内，删除会话由 `dsh-session-persistence-jsonl` 递归删目录（既有行为）；归档保留；file 块随会话日志持久化，历史回放保留卡片。
+
+## 工作区删除与高峰时段提示（v1.4.0）
+
+- **工作区删除连带删除会话**：宿主 `workspace.delete` 删除注册前捕获 `workspace.sessionIds`，逐个执行与单会话删除相同的 teardown；单会话失败只告警不回滚。`origin === "subagent"` 的会话跳过（随父会话 teardown 清理，且从不作为顶层行渲染，不会落入 Ungrouped）。客户端删除后刷新会话基线，冷会话（无 live 帧）立即从列表消失。
+- **归档管理删除**：插件宿主新增 `deleteSessions` remote（批量、每步超时兜底）；客户端多选 + 行内二次确认 + 15s 总超时兜底。
+- **高峰/空闲时段提示**：纯客户端组件 `PriceHoursHint`（`conversation.composer.dock` 槽位），浏览器时钟按 UTC+8 换算北京时间（无夏令时），9:00–12:00 / 14:00–18:00 判为高峰，其余空闲（价格为高峰一半）；30 秒刷新。
 
 ## 数据与凭据流
 

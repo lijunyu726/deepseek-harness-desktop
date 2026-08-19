@@ -20,8 +20,8 @@ packages/dsh-desktop/  双面 Cordis 插件（lib/index.js = 主机端，lib/cli
                        打包成 tgz 再装入 node_modules）
 scripts/               构建链：apply-vision-bridge.mjs、apply-upload-enhancements.mjs、
                        pack-plugin.mjs、ensure-peer-deps.mjs、sync-monorepo-overrides.mjs、build-icon.mjs
-patches/               上游包整文件补丁（conversation/apiproxy/web-frontend 增强版，
-                       由 apply-upload-enhancements.mjs 覆盖进 node_modules）
+patches/               上游包整文件补丁（conversation/apiproxy/workspace 客户端/web-frontend
+                       增强版，由 apply-upload-enhancements.mjs 覆盖进 node_modules）
 release/               构建产物（.app/.dmg/.zip）——只进 git 的忽略列表，绝不提交
 node_modules/          安装产物——绝不提交
 ```
@@ -31,7 +31,7 @@ node_modules/          安装产物——绝不提交
 0. **（仅新克隆/重装依赖后）fork 覆盖层**：本项目消费 npm 发布的 rc.6 依赖，但本地 fork 的会话删除等特性需要从 DSH 大仓覆盖运行时文件。克隆后先 `npm install`，再（如大仓可用）构建大仓并执行 `DSH_MONOREPO=<大仓路径> npm run sync:monorepo`；没有大仓时应用仍可构建运行，只是缺 fork 特性。已迁移的本机 node_modules 已含覆盖层，日常构建跳过此步。
 1. `npm run bash:prepare` —— 将官方 rc.7 的 persistent Bash 快速结算修复精确回植到当前 rc.6 两个运行时文件（可重建、拒绝未知结构）；
 2. `npm run vision:prepare` —— 给 rc.6 依赖打视觉桥补丁（可重建、拒绝未知版本）；
-3. `npm run upload:prepare` —— 把 `patches/` 里的上传增强完整文件覆盖到三个上游包（conversation/apiproxy/web-frontend bundle），原文件留 `.upstream-backup`，幂等 + 语法预检（`--check` 模式可验证是否已打上）；
+3. `npm run upload:prepare` —— 把 `patches/` 里的增强完整文件覆盖到四个上游包（conversation/apiproxy/workspace 客户端/web-frontend bundle），原文件留 `.upstream-backup`，幂等 + 语法预检（`--check` 模式可验证是否已打上）；
 4. `npm run pack:plugin` —— 先对 `packages/dsh-desktop/lib/*.js` 执行强制语法预检，再把插件打进 tgz 并刷新 `node_modules/@deepseek-ai/dsh-desktop`（**改插件代码后必须重跑**，否则应用里跑的是旧包）；
 5. `npm run sanitize:runtime` —— 清理 DeepSeek 运行时 bundle 注释中的构建机绝对路径，并拒绝残留当前 HOME/项目根路径；
 6. `node scripts/ensure-peer-deps.mjs` —— 把全部 peer 依赖钉进 `package.json`（electron-builder 会裁掉 peer 依赖，漏掉会导致别的电脑启动即崩）；
@@ -41,7 +41,7 @@ node_modules/          安装产物——绝不提交
 
 ## 关键实现约束（改代码前必读）
 
-- **上传增强 = 整文件补丁，不许改成字符串手术**：三个上游包（conversation/apiproxy/web-frontend）的增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 覆盖（原文件留 `.upstream-backup`）。改动流程：改已装应用内文件 → 验证 → 复制回 `patches/` 或 `packages/dsh-desktop/lib/` → `npm run upload:prepare && npm run pack:plugin` 再构建。
+- **上传增强 = 整文件补丁，不许改成字符串手术**：四个上游包（conversation/apiproxy/workspace 客户端/web-frontend）的增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 覆盖（原文件留 `.upstream-backup`）。改动流程：改已装应用内文件 → 验证 → 复制回 `patches/` 或 `packages/dsh-desktop/lib/` → `npm run upload:prepare && npm run pack:plugin` 再构建。
 - **file 块协议约束**：消息 wire 的 `file` 块只带元数据与路径，**不带字节**（字节存会话目录）；`desktopFileContent` 必须为每个 file 块附加 text 说明，且不得把 file 块当 image（`isImageFile` 双校验 MIME+扩展名）。文件卡片渲染依赖 durable content 里的 file 块，删除会话递归清理 `uploads/` 是预期行为。
 - **图标链路走主进程桥**：文件图标经 Host stdout `[desktop-event] {kind:'file-icon'}` → 主进程 `app.getFileIcon` → `executeJavaScript` 回注 → 页面转发 `resolveFileIcon`；与 `pick-folder` 原生目录选择器同一条双跳桥模式。页面侧必须按路径缓存 + in-flight 去重。
 - **zstd 解码必须留在子进程**：Electron 内置 Node 的 zstd 原生解码（同步/异步/流式）都会随机 SIGTRAP，任何「进程内解压」都是回归。用量扫描全部在 `assets/usage-scan.mjs` 子进程里，失败只丢刷新、不杀服务。

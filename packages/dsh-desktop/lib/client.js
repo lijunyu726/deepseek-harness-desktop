@@ -272,14 +272,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 设置 → 归档管理：列出注册表级归档集合中的会话并提供「取消归档」。
-     * 列表数据全部来自标准 hook（useWorkspaces 的 archivedSessionIds +
-     * useSessions 的会话行），取消归档走 host remote；成功后宿主流会推送
-     * host/archived-sessions-changed，列表与侧边栏自动恢复，无需刷新。
+     * 设置 → 归档管理：列出注册表级归档集合中的会话，提供「取消归档」和
+     * 「删除」（单个 + 多选批量）。删除走 host remote（deleteSessions）；
+     * 宿主流在注册表变化后推送 host/archived-sessions-changed，列表与
+     * 侧边栏自动同步。删除确认用行内二次确认；remote 内部每步都有超时
+     * 兜底，客户端另有总超时，界面绝不会卡死在「正在删除…」。
      */
     function ArchivesSection({ gateway, useSessions, useWorkspaces }) {
       const [notice, setNotice] = react.useState({ text: '', kind: '' })
       const [busyId, setBusyId] = react.useState(null)
+      const [selected, setSelected] = react.useState([])
+      const [confirmId, setConfirmId] = react.useState(null)
+      const [deleting, setDeleting] = react.useState(false)
       const archivedIds = useWorkspaces((s) => s.archivedSessionIds)
       const byId = useSessions((s) => s.byId)
 
@@ -294,7 +298,7 @@ window.__ModuleLoader__.load({
       })
 
       const unarchive = (id) => {
-        if (busyId !== null) return
+        if (busyId !== null || deleting) return
         setBusyId(id)
         gateway.unarchiveSession(id).then(
           (r) => {
@@ -309,13 +313,62 @@ window.__ModuleLoader__.load({
         )
       }
 
+      const toggleSelect = (id) => {
+        setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
+      }
+      const allSelected = rows.length > 0 && rows.every((row) => selected.includes(row.id))
+      const toggleSelectAll = () => {
+        if (allSelected) setSelected([])
+        else setSelected(rows.map((row) => row.id))
+      }
+
+      const deadline = (p, ms, message) => {
+        const tracked = Promise.resolve(p)
+        tracked.catch(() => {})
+        let timer
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), ms)
+        })
+        return Promise.race([tracked, timeout]).finally(() => clearTimeout(timer))
+      }
+
+      const doDelete = async (ids) => {
+        if (deleting) return
+        setDeleting(true)
+        setBusyId(null)
+        setNotice({ text: '', kind: '' })
+        try {
+          const r = await deadline(gateway.deleteSessions(ids), 20000, '删除请求超时')
+          const results = Array.isArray(r && r.results) ? r.results : []
+          const okIds = results.filter((x) => x && x.ok === true).map((x) => x.id)
+          const fails = results.filter((x) => !(x && x.ok === true))
+          if (r && r.ok === true && fails.length === 0) {
+            setNotice({ text: `已删除 ${okIds.length} 个会话 ✓`, kind: 'ok' })
+          } else if (r && r.ok === true) {
+            setNotice({ text: `已删除 ${okIds.length} 个，失败 ${fails.length} 个：${fails.map((x) => (x && x.error) || '未知错误').join('；')}`, kind: 'err' })
+          } else {
+            setNotice({ text: `删除失败：${(r && r.error) || '未知错误'}`, kind: 'err' })
+          }
+          setSelected((cur) => cur.filter((id) => !okIds.includes(id)))
+        } catch (err) {
+          setNotice({ text: `删除失败：${String(err?.message ?? err ?? 'RPC 调用出错')}`, kind: 'err' })
+        } finally {
+          setDeleting(false)
+          setConfirmId(null)
+        }
+      }
+
+      const confirmRow = confirmId !== null && confirmId !== '__bulk__'
+        ? rows.find((row) => row.id === confirmId) ?? { id: confirmId, title: String(confirmId) }
+        : null
+
       return react.createElement(
         'div',
         { style: SEC_WRAP },
         react.createElement(
           'div',
           { style: ARCH_HINT },
-          '已归档的会话会从侧边栏分组视图中隐藏，但会话日志与工作区记账都完整保留。取消归档后，会话会回到它原来的分组位置。',
+          '已归档的会话会从侧边栏分组视图中隐藏，但会话日志与工作区记账都完整保留。取消归档后，会话会回到它原来的分组位置。删除会永久移除会话及其全部对话记录，此操作不可撤销。',
         ),
         notice.text && react.createElement('div', {
           style: { fontSize: 12, color: notice.kind === 'err' ? ERR : OK, padding: '6px 0' },
@@ -326,6 +379,56 @@ window.__ModuleLoader__.load({
           '没有已归档的会话。在侧边栏会话行的菜单里选择「归档会话」，就会把会话收进这里。',
         ),
         rows.length > 0 && react.createElement(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: '14px', padding: '4px 0', flexWrap: 'wrap' } },
+          react.createElement(
+            'label',
+            { style: { display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: 12, cursor: 'pointer' } },
+            react.createElement('input', { type: 'checkbox', style: CHECK, checked: allSelected, onChange: toggleSelectAll }),
+            '全选',
+          ),
+          selected.length > 0 && react.createElement('span', { style: { fontSize: 12, opacity: 0.75 } }, `已选 ${selected.length} 项`),
+          selected.length > 0 && react.createElement('button', {
+            style: { ...SMALL_BTN, borderColor: 'rgba(229,72,77,0.5)', color: ERR },
+            disabled: deleting,
+            onClick: () => setConfirmId('__bulk__'),
+          }, deleting ? '正在删除…' : `删除所选 (${selected.length})`),
+          selected.length > 0 && react.createElement('button', {
+            style: SMALL_BTN,
+            disabled: deleting,
+            onClick: () => {
+              setSelected([])
+              setConfirmId(null)
+            },
+          }, '取消选择'),
+        ),
+        confirmId !== null && react.createElement(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', border: '1px solid rgba(229,72,77,0.45)', borderRadius: '8px', fontSize: 12, marginTop: '4px', flexWrap: 'wrap' } },
+          react.createElement(
+            'span',
+            { style: { flex: '1 1 320px' } },
+            confirmId === '__bulk__'
+              ? `确定要永久删除已选的 ${selected.length} 个会话及其全部对话记录吗？此操作不可撤销。`
+              : `确定要永久删除会话「${confirmRow.title}」及其全部对话记录吗？此操作不可撤销。`,
+          ),
+          react.createElement('button', {
+            style: SMALL_BTN,
+            disabled: deleting,
+            onClick: () => setConfirmId(null),
+          }, '取消'),
+          react.createElement('button', {
+            style: { ...SMALL_BTN, borderColor: 'rgba(229,72,77,0.5)', color: ERR },
+            disabled: deleting,
+            onClick: () => {
+              const ids = confirmId === '__bulk__'
+                ? rows.filter((row) => selected.includes(row.id)).map((row) => row.id)
+                : [confirmId]
+              if (ids.length > 0) void doDelete(ids)
+            },
+          }, deleting ? '正在删除…' : '确认删除'),
+        ),
+        rows.length > 0 && react.createElement(
           'table',
           { style: { ...TABLE, marginTop: '6px' } },
           react.createElement(
@@ -334,6 +437,7 @@ window.__ModuleLoader__.load({
             react.createElement(
               'tr',
               null,
+              react.createElement('th', { style: { ...TH, width: '32px' } }, ''),
               react.createElement('th', { style: TH }, '会话'),
               react.createElement('th', { style: TH }, '工作区'),
               react.createElement('th', { style: TH }, '最近更新'),
@@ -347,15 +451,35 @@ window.__ModuleLoader__.load({
               react.createElement(
                 'tr',
                 { key: row.id },
+                react.createElement('td', { style: TD },
+                  react.createElement('input', {
+                    type: 'checkbox',
+                    style: CHECK,
+                    checked: selected.includes(row.id),
+                    onChange: () => toggleSelect(row.id),
+                  }),
+                ),
                 react.createElement('td', { style: TD, title: row.id }, row.title.slice(0, 48)),
                 react.createElement('td', { style: TD, title: row.cwd ?? '' }, cwdLabel(row.cwd)),
                 react.createElement('td', { style: TD }, fmtDay(row.updatedAt)),
                 react.createElement('td', { style: TD },
-                  react.createElement('button', {
-                    style: SMALL_BTN,
-                    disabled: busyId !== null,
-                    onClick: () => unarchive(row.id),
-                  }, busyId === row.id ? '处理中…' : '取消归档'),
+                  react.createElement(
+                    'div',
+                    { style: { display: 'flex', alignItems: 'center', gap: '14px' } },
+                    react.createElement('button', {
+                      style: SMALL_BTN,
+                      disabled: busyId !== null || deleting,
+                      onClick: () => unarchive(row.id),
+                    }, busyId === row.id ? '处理中…' : '取消归档'),
+                    react.createElement('button', {
+                      style: { ...DELETE_BTN, width: 'auto' },
+                      disabled: busyId !== null || deleting,
+                      onClick: () => {
+                        setConfirmId(row.id)
+                        setNotice({ text: '', kind: '' })
+                      },
+                    }, '删除'),
+                  ),
                 ),
               ),
             ),
@@ -1363,6 +1487,63 @@ window.__ModuleLoader__.load({
         'button',
         { style: STATS_CHIP, title: '会话统计样式：完整 / 悬停 / 紧凑 / 隐藏（点击切换）', onClick: cycle },
         `统计·${current.label}`,
+      )
+    }
+
+    // — 高峰 / 空闲时段提示 -----------------------------------------------------
+    // DeepSeek 计费：空闲时段价格为高峰时段的一半；高峰时段为北京时间
+    // 9:00–12:00 与 14:00–18:00，其余为空闲时段。北京时间无夏令时（UTC+8），
+    // 因此直接从浏览器时钟按 UTC+8 换算，无需网络或 Host。
+    const PEAK_WINDOWS_MIN = [[9 * 60, 12 * 60], [14 * 60, 18 * 60]]
+
+    function beijingClock(now) {
+      const shifted = new Date(now.getTime() + 8 * 3600 * 1000)
+      return { hours: shifted.getUTCHours(), minutes: shifted.getUTCMinutes() }
+    }
+
+    function pricePhase(now) {
+      const { hours, minutes } = beijingClock(now)
+      const t = hours * 60 + minutes
+      return PEAK_WINDOWS_MIN.some(([start, end]) => t >= start && t < end) ? 'peak' : 'offpeak'
+    }
+
+    function PriceHoursHint() {
+      const [now, setNow] = react.useState(() => Date.now())
+      react.useEffect(() => {
+        const timer = window.setInterval(() => setNow(Date.now()), 30 * 1000)
+        return () => window.clearInterval(timer)
+      }, [])
+      const peak = pricePhase(now) === 'peak'
+      const { hours, minutes } = beijingClock(now)
+      const hh = String(hours).padStart(2, '0')
+      const mm = String(minutes).padStart(2, '0')
+      const title = peak
+        ? `高峰时段（北京时间 9:00–12:00 / 14:00–18:00）· 按标准价格计费。空闲时段价格为高峰时段的一半。当前北京时间 ${hh}:${mm}。`
+        : `空闲时段 · 价格为高峰时段的一半（5 折）。高峰时段为北京时间 9:00–12:00 / 14:00–18:00。当前北京时间 ${hh}:${mm}。`
+      return react.createElement(
+        'span',
+        {
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px',
+            border: 'none',
+            background: 'transparent',
+            color: 'inherit',
+            fontSize: '11px',
+            opacity: 0.62,
+            padding: '0 2px',
+            fontFamily: 'inherit',
+            lineHeight: '16px',
+            cursor: 'default',
+            whiteSpace: 'nowrap',
+          },
+          title,
+        },
+        react.createElement('span', {
+          style: { width: 6, height: 6, borderRadius: 999, background: peak ? WARN : OK, flex: 'none' },
+        }),
+        peak ? `高峰时段 · 标准价 · BJ ${hh}:${mm}` : `空闲时段 · 半价 · BJ ${hh}:${mm}`,
       )
     }
 
@@ -2515,6 +2696,7 @@ window.__ModuleLoader__.load({
         desktopAction: (action, path) => connection.rpc.call('/api', 'globalInstructions/desktopAction', { args: { action, path } }).then(unwrap),
         storageUsage: () => connection.rpc.call('/api', 'globalInstructions/storageUsage', { args: {} }).then(unwrap),
         unarchiveSession: (sessionId) => connection.rpc.call('/api', 'globalInstructions/unarchiveSession', { args: { sessionId } }).then(unwrap),
+        deleteSessions: (sessionIds) => connection.rpc.call('/api', 'globalInstructions/deleteSessions', { args: { sessionIds } }).then(unwrap),
         listSessionCandidates: (sessionId, query, limit) => connection.rpc.call('/api', 'globalInstructions/listSessionCandidates', { args: { sessionId, query, limit } }).then(unwrap),
         listSkills: () => connection.rpc.call('/api', 'globalInstructions/listSkills', { args: {} }).then(unwrap),
         listMcpServers: () => connection.rpc.call('/api', 'globalInstructions/listMcpServers', { args: {} }).then(unwrap),
@@ -2929,6 +3111,17 @@ window.__ModuleLoader__.load({
             inject: () => ({ gateway }),
           },
           StatsStyleChip,
+        ),
+      )
+      // 高峰 / 空闲时段提示：常驻输入卡下方的环境读数（高峰与空闲各有提示）。
+      ctx.slots.inject('conversation.composer.dock', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.composer.dock',
+            id: 'price-hours',
+            order: 100,
+          },
+          PriceHoursHint,
         ),
       )
       // Take the named model seat: the whale rheostat replaces the shell's

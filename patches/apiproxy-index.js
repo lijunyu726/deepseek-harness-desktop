@@ -1927,6 +1927,83 @@ function createApiProxy(ctx, defaults) {
 		const envelope = frame(payload);
 		for (const queue of muxQueues) queue.push(envelope);
 	}
+	/**
+	* Settle `promise` within `ms`, or reject with `message`. A late result
+	* (or rejection) after the timeout is swallowed so the race loser never
+	* becomes an unhandled rejection. Used by session deletion so a hung
+	* agent teardown can never freeze the delete RPC — the dialog must always
+	* settle and the user must never be trapped on "deleting…".
+	*/
+	function withTimeout(promise, ms, message) {
+		const tracked = Promise.resolve(promise);
+		tracked.catch(() => void 0);
+		let timer;
+		const deadline = new Promise((_, reject) => {
+			timer = setTimeout(() => reject(new Error(message)), ms);
+		});
+		return Promise.race([tracked, deadline]).finally(() => clearTimeout(timer));
+	}
+	/** Upper bound for one agent teardown inside session deletion. */
+	const SESSION_DELETE_DISPOSE_TIMEOUT_MS = 8000;
+	/**
+	* Shared permanent-session-deletion teardown: flush the attached session
+	* (best effort — a ghost's log is already gone), cancel and dispose the
+	* live agent under a deadline, purge the durable log through the workspace
+	* registry, then force-remove residual live registrations so a deleted
+	* session can never linger in `session.list` as a ghost. Every step settles
+	* or times out; the caller decides how an unknown-session rejection maps.
+	* @param sessionId - the session to tear down.
+	* @throws {WorkspaceUnknownSessionError} when no live, indexed, or persisted
+	*   session matches the id.
+	*/
+	async function teardownSessionForDelete(sessionId) {
+		const attached = ctx.sessions.get(sessionId);
+		const live = ctx.agents.get(sessionId);
+		// A flush failure (e.g. ENOENT for a session whose log is already
+		// gone) must never block the delete itself.
+		if (attached !== void 0) {
+			try {
+				await ctx.sessions.flush(attached);
+			} catch (error) {
+				ctx.logger.warn(`session.delete: flushing "${sessionId}" failed (continuing): ${String(error)}`);
+			}
+		}
+		if (live !== void 0) {
+			const handle = agentHandles.get(sessionId);
+			if (handle !== void 0) {
+				try {
+					await withTimeout(handle.dispose(), SESSION_DELETE_DISPOSE_TIMEOUT_MS, `agent "${sessionId}" teardown timed out`);
+				} catch (error) {
+					ctx.logger.warn(`session.delete: disposing agent "${sessionId}" failed or timed out (continuing): ${String(error)}`);
+					try {
+						live.cancel({ kind: "disposed" });
+					} catch (cancelError) {
+						ctx.logger.warn(`session.delete: cancelling agent "${sessionId}" failed: ${String(cancelError)}`);
+					}
+				}
+			} else {
+				try {
+					live.cancel({ kind: "disposed" });
+				} catch (error) {
+					ctx.logger.warn(`session.delete: cancelling agent "${sessionId}" failed: ${String(error)}`);
+				}
+			}
+		}
+		await ctx.workspaceRegistry.deleteSession(sessionId);
+		// Final guarantee: the durable log is gone, so the live session must
+		// not linger in the registries — a ghost would keep showing in
+		// session.list and fail every future run with ENOENT.
+		try {
+			ctx.agents.remove?.(sessionId);
+		} catch (error) {
+			ctx.logger.warn(`session.delete: removing agent "${sessionId}" registration failed: ${String(error)}`);
+		}
+		try {
+			ctx.sessions.remove?.(sessionId);
+		} catch (error) {
+			ctx.logger.warn(`session.delete: removing session "${sessionId}" registration failed: ${String(error)}`);
+		}
+	}
 	ctx.inject(["sessionProjections"], (projectionCtx) => {
 		projectionCtx.sessionProjections.onChanged((session, key, value, seq) => {
 			broadcast({
@@ -3242,9 +3319,31 @@ function createApiProxy(ctx, defaults) {
 			},
 			async delete(request) {
 				const { workspaceId } = request.payload;
-				const operation = workspaceCreationChain.then(() => ctx.workspaceRegistry.delete(WorkspaceId(workspaceId)));
+				const id = WorkspaceId(workspaceId);
+				// Permanent deletion: capture the workspace's session accounting
+				// BEFORE the registration goes away, then tear every session
+				// down so none of them reappears under Ungrouped after the
+				// workspace itself is gone.
+				const workspace = ctx.workspaceRegistry.get(id);
+				const sessionIds = workspace === void 0 ? [] : [...workspace.sessionIds];
+				const operation = workspaceCreationChain.then(() => ctx.workspaceRegistry.delete(id));
 				workspaceCreationChain = operation.then(() => void 0, () => void 0);
 				if (!await operation) return workspaceNotFound(request, workspaceId);
+				for (const sessionId of sessionIds) {
+					try {
+						// Subagent-owned sessions belong to their parent session's
+						// tree and never render as top-level rows; leave them to
+						// the parent's teardown (matching the single
+						// session.delete path).
+						const attached = ctx.sessions.get(sessionId);
+						if (attached !== void 0 && hasSubagentOwner(attached, ctx.agents.get(sessionId))) continue;
+						await teardownSessionForDelete(sessionId);
+					} catch (error) {
+						// An already-committed workspace deletion must never be
+						// rolled back by one stubborn session: log and continue.
+						ctx.logger.warn(`workspace.delete: removing session "${sessionId}" of deleted workspace "${workspaceId}" failed (continuing): ${String(error)}`);
+					}
+				}
 				return ok(request, { deleted: true });
 			},
 			async insertBefore(request) {
@@ -3296,13 +3395,7 @@ function createApiProxy(ctx, defaults) {
 				const live = ctx.agents.get(sessionId);
 				if (attached !== void 0 && hasSubagentOwner(attached, live)) return err(request, subagentOwnershipError(sessionId));
 				try {
-					if (attached !== void 0) await ctx.sessions.flush(attached);
-					if (live !== void 0) {
-						const handle = agentHandles.get(sessionId);
-						if (handle !== void 0) await handle.dispose();
-						else live.cancel({ kind: "disposed" });
-					}
-					await ctx.workspaceRegistry.deleteSession(sessionId);
+					await teardownSessionForDelete(sessionId);
 				} catch (error) {
 					if (!(error instanceof WorkspaceUnknownSessionError)) throw error;
 					return err(request, {

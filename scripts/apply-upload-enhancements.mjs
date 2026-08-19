@@ -12,6 +12,7 @@
  * Overlays (idempotent; originals kept as <file>.upstream-backup):
  *   patches/conversation-client.js  → dsh-client-ui-conversation/lib/client.js
  *   patches/apiproxy-index.js       → dsh-host-apiproxy/lib/index.js
+ *   patches/workspace-client.js     → dsh-client-ui-workspace/lib/client.js
  *   patches/web-frontend-bundle.js  → dsh-web-frontend/dist/assets/index-<hash>.js
  */
 
@@ -30,6 +31,7 @@ const checkOnly = args.includes('--check')
 
 const CONVERSATION_TARGET = path.join(nm, 'dsh-client-ui-conversation', 'lib', 'client.js')
 const APIPROXY_TARGET = path.join(nm, 'dsh-host-apiproxy', 'lib', 'index.js')
+const WORKSPACE_CLIENT_TARGET = path.join(nm, 'dsh-client-ui-workspace', 'lib', 'client.js')
 
 function frontendTarget() {
   const dist = path.join(nm, 'dsh-web-frontend', 'dist')
@@ -54,6 +56,7 @@ function overlay(patchFile, target) {
 const MARKERS = {
   [CONVERSATION_TARGET]: '__DSH_SAVE_UPLOAD__',
   [APIPROXY_TARGET]: 'desktopFileContent',
+  [WORKSPACE_CLIENT_TARGET]: 'permanently deletes all of its sessions',
 }
 
 function check() {
@@ -75,6 +78,7 @@ if (checkOnly) {
 } else {
   overlay(path.join(patchesDir, 'conversation-client.js'), CONVERSATION_TARGET)
   overlay(path.join(patchesDir, 'apiproxy-index.js'), APIPROXY_TARGET)
+  overlay(path.join(patchesDir, 'workspace-client.js'), WORKSPACE_CLIENT_TARGET)
   const fe = frontendTarget()
   if (fe === null) throw new Error('cannot resolve dsh-web-frontend main bundle from dist/index.html')
   overlay(path.join(patchesDir, 'web-frontend-bundle.js'), fe)
