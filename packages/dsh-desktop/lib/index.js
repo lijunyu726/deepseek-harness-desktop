@@ -72,6 +72,8 @@ function readPromptHistory() {
       .map((item) => ({
         text: item.text,
         createdAt: Number(item.createdAt) || 0,
+        // v1.3.2 起按会话归属记录；历史无归属的旧条目统一落到空串。
+        sessionId: typeof item.sessionId === 'string' ? item.sessionId : '',
       }))
       .filter((item) => item.text.trim().length > 0)
       .slice(0, PROMPT_HISTORY_LIMIT)
@@ -80,14 +82,14 @@ function readPromptHistory() {
   }
 }
 
-/** Atomically persist one accepted user prompt, deduplicated newest-first. */
-function rememberPrompt(text) {
-  if (typeof text !== 'string') return
+/** Atomically persist one accepted user prompt, deduplicated newest-first per session. */
+function rememberPrompt(sessionId, text) {
+  if (typeof text !== 'string' || typeof sessionId !== 'string' || sessionId.length === 0) return
   const normalized = text.trim()
   if (normalized.length === 0 || Buffer.byteLength(normalized, 'utf8') > MAX_PROMPT_BYTES) return
   const items = [
-    { text: normalized, createdAt: Date.now() },
-    ...readPromptHistory().filter((item) => item.text !== normalized),
+    { text: normalized, createdAt: Date.now(), sessionId },
+    ...readPromptHistory().filter((item) => !(item.sessionId === sessionId && item.text === normalized)),
   ].slice(0, PROMPT_HISTORY_LIMIT)
   const file = promptHistoryPath()
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`
@@ -692,10 +694,14 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
     }
   }
 
-  /** Return recent accepted user prompts, newest first. */
-  promptHistory(limit) {
+  /** Return recent accepted user prompts for one session, newest first. */
+  promptHistory(limit, sessionId) {
     const count = Math.min(PROMPT_HISTORY_LIMIT, Math.max(1, Number(limit) || 50))
-    return { ok: true, items: readPromptHistory().slice(0, count) }
+    const sid = String(sessionId ?? '')
+    const items = sid.length === 0
+      ? readPromptHistory().slice(0, count)
+      : readPromptHistory().filter((item) => item.sessionId === sid).slice(0, count)
+    return { ok: true, items }
   }
 
   /**
@@ -1975,7 +1981,7 @@ function installPromptHistory(ctx) {
     if (decision.kind === 'reject' || !ctx.agents.roots().includes(agent)) return decision
     for (const message of messages ?? []) {
       const text = promptText(message)
-      if (text.length > 0) rememberPrompt(text)
+      if (text.length > 0) rememberPrompt(String(agent.id ?? ''), text)
     }
     return decision
   })

@@ -52,7 +52,7 @@ node_modules/          安装产物——绝不提交
 - **zstd 解码必须留在子进程**：Electron 内置 Node 的 zstd 原生解码（同步/异步/流式）都会随机 SIGTRAP，任何「进程内解压」都是回归。用量扫描全部在 `assets/usage-scan.mjs` 子进程里，失败只丢刷新、不杀服务。
 - **Persistent Bash 修复必须覆盖协议两侧**：当前 rc.6 通过 `scripts/apply-persistent-bash-fix.mjs` 精确回植官方 `a8dc6f9`；不得按网帖只把 `CONTROLLED_PROMPT` 改成工具私有提示符。终端后端必须在 `PROMPT_COMMAND` 中重新设定受控 `PS1`，持久工具必须只执行 `stty -echo` 并以 `waitReason === "stdin_read"` 处理无结束标记回退。
 - **日志扫描是增量且不阻塞面板的**：会话日志是只追加的 zstd 帧流；扫描结果（mtime/size/frameEnd/按日用量）持久化在 `$DSH_HOME/desktop/usage-scan-cache.json`。用量 RPC 必须先返回缓存，再后台启动单飞增量扫描；不得重新让客户端等待 zstd 子进程。
-- **历史 Prompt 只在接受边界记录**：仅从根 agent 的 `agent/pre-step` claimed batch 记录 `source.kind === 'user'` 的文字，不监听 DOM 猜测发送、不记录草稿/系统注入/工具消息。历史只能写入 `$DSH_HOME/desktop/prompt-history.json`，上限 100 条、单条 64 KiB、权限 600；恢复草稿必须走 `inputActions.setDraft()`。
+- **历史 Prompt 只在接受边界记录，且必须按会话归属**：仅从根 agent 的 `agent/pre-step` claimed batch 记录 `source.kind === 'user'` 的文字，不监听 DOM 猜测发送、不记录草稿/系统注入/工具消息。每条记录必须携带 `sessionId`（`String(agent.id)`）；历史只能写入 `$DSH_HOME/desktop/prompt-history.json`，上限 100 条、单条 64 KiB、权限 600；`promptHistory` remote 必须按 sessionId 过滤，时间轴只显示当前会话。恢复草稿必须走 `inputActions.setDraft()`。
 - **路径自愈**：插件内所有定位 app 资源（usage-scan.mjs、vision-server.mjs 模板）都用「模块目录相对路径 + `process.execPath` 回退」双候选；`ensureVisionCommand` 会在启动时把 vision MCP 行的 `command` 从系统 `node` 改写为应用自带 Node（app 移动后自动重写）。**不要把绝对路径写死在插件里。**
 - **插槽优先级**：接管 shell 的单席位要用比 0 更低的 priority（鲸鱼变阻器用 -10）。
 - **鲸鱼图集契约**：六档素材固定为 `flash-off/high/max`、`pro-off/high/max`；每张是 1056×512、6×4 网格、24 帧、176×128 单元格的带透明通道无损 WebP。客户端档位顺序必须显式映射，不能依赖模型接口返回顺序；素材必须由宿主精确同源路由提供并随插件 tgz 打包。

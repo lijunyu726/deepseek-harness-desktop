@@ -1524,6 +1524,14 @@ window.__ModuleLoader__.load({
         'span',
         {
           style: {
+            // Absolutely centered against the session header (its only
+            // positioned ancestor): sits in the middle of the top bar,
+            // vertically aligned with the 32px title row.
+            position: 'absolute',
+            left: '50%',
+            top: '12px',
+            height: '32px',
+            transform: 'translateX(-50%)',
             display: 'inline-flex',
             alignItems: 'center',
             gap: '5px',
@@ -1532,7 +1540,7 @@ window.__ModuleLoader__.load({
             color: 'inherit',
             fontSize: '11px',
             opacity: 0.62,
-            padding: '0 2px',
+            padding: '0 8px',
             fontFamily: 'inherit',
             lineHeight: '16px',
             cursor: 'default',
@@ -1589,7 +1597,7 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function PromptHistoryRail({ useInput, inputActions, gateway }) {
+    function PromptHistoryRail({ useInput, inputActions, gateway, sessionId }) {
       const input = typeof useInput === 'function' ? useInput((state) => state) : null
       const [items, setItems] = react.useState([])
       const [mouseY, setMouseY] = react.useState(null)
@@ -1636,14 +1644,16 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('resize', onResize)
       }, [measureTicks])
 
-      const load = react.useCallback(() => gateway.promptHistory(100).then((result) => {
+      const load = react.useCallback(() => gateway.promptHistory(100, sessionId).then((result) => {
         const next = result && result.ok && Array.isArray(result.items) ? [...result.items].reverse() : []
         // The timeline reads chronologically from top to bottom, with the
-        // newest accepted prompt at the bottom like Codex.
+        // newest accepted prompt at the bottom like Codex. Only THIS
+        // session's prompts belong on the rail — the host filters by the
+        // owning session id.
         setItems(next)
         itemsRef.current = next
         return next
-      }).catch(() => []), [gateway])
+      }).catch(() => []), [gateway, sessionId])
 
       react.useEffect(() => {
         load()
@@ -2690,7 +2700,7 @@ window.__ModuleLoader__.load({
         save: (text) => connection.rpc.call('/api', 'globalInstructions/save', { args: { text } }).then(unwrap),
         balance: () => connection.rpc.call('/api', 'globalInstructions/balance', { args: {} }).then(unwrap),
         usage: (refresh = false) => connection.rpc.call('/api', 'globalInstructions/usage', { args: { refresh } }).then(unwrap),
-        promptHistory: (limit = 50) => connection.rpc.call('/api', 'globalInstructions/promptHistory', { args: { limit } }).then(unwrap),
+        promptHistory: (limit = 50, sessionId) => connection.rpc.call('/api', 'globalInstructions/promptHistory', { args: { limit, sessionId } }).then(unwrap),
         desktopConfig: () => connection.rpc.call('/api', 'globalInstructions/desktopConfig', { args: {} }).then(unwrap),
         saveDesktopConfig: (patch) => connection.rpc.call('/api', 'globalInstructions/saveDesktopConfig', { args: { patch } }).then(unwrap),
         desktopAction: (action, path) => connection.rpc.call('/api', 'globalInstructions/desktopAction', { args: { action, path } }).then(unwrap),
@@ -3113,13 +3123,14 @@ window.__ModuleLoader__.load({
           StatsStyleChip,
         ),
       )
-      // 高峰 / 空闲时段提示：常驻输入卡下方的环境读数（高峰与空闲各有提示）。
-      ctx.slots.inject('conversation.composer.dock', () =>
+      // 高峰 / 空闲时段提示：绝对定位在会话页顶部栏中央（标题与右侧按钮之间），
+      // 高峰与空闲各有提示；header 槽位只是挂载锚点。
+      ctx.slots.inject('conversation.session.header.utilities', () =>
         ctx.slots.register(
           {
-            name: 'conversation.composer.dock',
+            name: 'conversation.session.header.utilities',
             id: 'price-hours',
-            order: 100,
+            order: 80,
           },
           PriceHoursHint,
         ),
