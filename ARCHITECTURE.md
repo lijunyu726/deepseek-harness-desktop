@@ -10,7 +10,7 @@ Electron 主进程用 Electron 自带的 Node 运行时（`ELECTRON_RUN_AS_NODE=
 
 ## 双面 Cordis 插件（`@deepseek-ai/dsh-desktop`）
 
-`assets/desktop.patch.yml` 以 insert 形式挂载插件。`DshServer.ensurePluginFallback()` 在启动前把打包的插件软链进 profile 的模块回退目录。插件主机端（`lib/index.js`）通过 Typert 远程（`globalInstructions/*`，SRC 反射模式）暴露全部业务面；浏览器端（`lib/client.js`）是一个客户端模块 bundle（`window.__ModuleLoader__.load`），注册设置分类与会话页界面；`lib/mobile.js` 在服务端注入 index.html 引导脚本（工作区自选 + 手机抽屉布局）。
+`assets/desktop.patch.yml` 以 insert 形式挂载插件。`DshServer.ensurePluginFallback()` 在启动前把打包的插件软链进 profile 的模块回退目录。插件主机端（`lib/index.js`）通过 Typert 远程（`globalInstructions/*`，SRC 反射模式）暴露全部业务面；浏览器端（`lib/client.js`）是一个客户端模块 bundle（`window.__ModuleLoader__.load`），注册设置分类与会话页界面；`lib/mobile.js` 在服务端注入 index.html 引导脚本（工作区自选 + 手机抽屉布局）。引导脚本幂等安装——媒体查询变化（旋转/分屏/跨断点）重入时只重跑布局强化，不重复注入样式/遮罩/汉堡按钮；窄屏下隐藏头部 Session log 胶囊、常驻会话行「…」菜单（触屏无悬停）、设置面板打开时隐藏汉堡按钮（`:has(.VOzbGW_overlay)` + MutationObserver 兜底）。
 
 ### 设置分类（`settings.section`）
 
@@ -18,7 +18,7 @@ Electron 主进程用 Electron 自带的 Node 运行时（`ELECTRON_RUN_AS_NODE=
 - **全局约束规则**：直接读写 `$DSH_HOME/AGENTS.md`。
 - **归档管理 / 扩展**：会话归档取消、MCP 服务器与 Skills 的列表/开关/删除（读写 profile 补丁与 SKILL.md frontmatter）。
 - **看图工具**：vision MCP 的模型名/调用地址/API Key 写入服务脚本旁的 `vision.config.json`（每次调用实时读取）；首次保存会把旧硬编码脚本替换为随应用打包的 `assets/vision-server.mjs` 模板并重启该 MCP 行。
-- **应用**：通知、开机自启、局域网访问（二维码/地址）、代理、统计样式、存储占用。
+- **应用**：通知、开机自启、移动端访问（二维码/地址）、代理、统计样式、存储占用。
 
 ### 按日用量扫描（隔离子进程）
 
@@ -26,7 +26,7 @@ Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测
 
 ### 历史 Prompt
 
-宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘、抽屉右侧的 Codex 同构裸时间轴：历史在渲染前反转为最旧在上、最新在下；每项拥有 30×8px 稳定命中区，`::before` 绘制左端对齐的 6×1px 横线。轨道 `mousemove` 持续上报鼠标 Y，每根横线按自身中心与光标的像素距离计算高斯值（σ=18），仅通过 CSS 自定义属性把 `scaleX` 从 1 放大至约 4.35，线宽峰值约 26px且厚度始终为 1px；几何在挂载、条目变化、滚动和窗口缩放时重测。悬停气泡与最近横线垂直居中，只渲染最多四行 Prompt 正文，无标题、日期、序号、箭头和描边；点击仍通过标准 `inputActions.setDraft()` 恢复文本，没有旁路输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层。桌面与手机连接同一服务，因此天然共享历史。
+宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘、抽屉右侧的 Codex 同构裸时间轴：历史在渲染前反转为最旧在上、最新在下；每项拥有 30×8px 稳定命中区，`::before` 绘制左端对齐的 6×1px 横线。轨道 `mousemove` 持续上报鼠标 Y，每根横线按自身中心与光标的像素距离计算高斯值（σ=18），仅通过 CSS 自定义属性把 `scaleX` 从 1 放大至约 4.35，线宽峰值约 26px且厚度始终为 1px；几何在挂载、条目变化、滚动和窗口缩放时重测。悬停气泡与最近横线垂直居中，只渲染最多四行 Prompt 正文，无标题、日期、序号、箭头和描边；点击仍通过标准 `inputActions.setDraft()` 恢复文本，没有旁路输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层。桌面与手机连接同一服务，因此天然共享历史；手机布局下 pane 左缘为视口边缘、`cardRect.left - 30` 为负值，钳位到 ≥4px 的可见槽内，避免时间轴跑到屏幕外。
 
 ### 局域网可信名单自愈
 

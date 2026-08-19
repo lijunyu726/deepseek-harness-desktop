@@ -4,7 +4,7 @@
 
 ## 项目是什么
 
-把 DeepSeek Harness 的 `dsh web` GUI 包成 macOS 桌面应用（Electron 39，内置 Node 22.22.1，无需系统 Node），并叠加一套桌面/手机共用的增强功能（设置分类、用量热力图、历史 Prompt、鲸鱼思考强度变阻器、局域网手机访问、看图 MCP 管理等）。
+把 DeepSeek Harness 的 `dsh web` GUI 包成 macOS 桌面应用（Electron 39，内置 Node 22.22.1，无需系统 Node），并叠加一套桌面/手机共用的增强功能（设置分类、用量热力图、历史 Prompt、鲸鱼思考强度变阻器、移动端访问（局域网手机访问）、看图 MCP 管理等）。
 
 - 服务子进程 = 同一个 `dsh web`（`--profile web`），桌面窗口和手机浏览器连的是**同一个服务**，没有同步层。
 - 用户数据（会话/API Key/配置）全部在 `$DSH_HOME`（默认 `~/.dsh`）与 `~/Library/Application Support/DeepSeek Harness`，**永远不在本仓库内**。
@@ -77,7 +77,7 @@ node_modules/          安装产物——绝不提交
 - 面向用户的 `.app` 只能包含 `main/`、`assets/`、`package.json` 与生产 `node_modules/`；项目文档、构建脚本、本地插件源码、source map 和本机绝对路径不得进入 DMG；
 - 不得放宽 dsh 的信任围栏/特权方法锁；
 - 提交前 `grep` 检查明文密钥（`sk-`、XIAOMI key 值）与本机路径；
-- 局域网访问开关默认关闭，且只面向用户可信网络。
+- 移动端访问开关默认关闭，且只面向用户可信网络。
 
 ## 回退方法
 

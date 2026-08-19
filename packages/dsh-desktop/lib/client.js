@@ -265,6 +265,30 @@ window.__ModuleLoader__.load({
     // — 归档管理 ---------------------------------------------------------------
     const ARCH_HINT = { fontSize: '12px', lineHeight: 1.7, opacity: 0.72 }
 
+    // Phone layout: a 5-column table cannot survive 290px — columns collapse
+    // (title got 41px, the 取消归档 button wrapped into a 38×82px tower). On
+    // narrow/touch screens restyle each row as a card: checkbox | title /
+    // cwd · date / action buttons, with the header row hidden entirely.
+    function installArchivesMobileStyle() {
+      if (document.getElementById('dsh-archives-mobile-css') !== null) return
+      const style = document.createElement('style')
+      style.id = 'dsh-archives-mobile-css'
+      style.textContent = [
+        '@media (max-width: 760px), (pointer: coarse) and (max-width: 960px) {',
+        '  .dsh-archives-table thead { display: none !important; }',
+        '  .dsh-archives-table, .dsh-archives-table tbody { display: block !important; width: 100% !important; }',
+        '  .dsh-archives-table tr { display: grid !important; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 4px; padding: 8px 10px; border: 1px solid rgba(128,140,160,0.22); border-radius: 10px; margin: 0 0 8px; }',
+        '  .dsh-archives-table td { display: block !important; padding: 0 !important; border: none !important; width: auto !important; }',
+        '  .dsh-archives-table td:nth-child(1) { grid-column: 1; grid-row: 1 / span 2; align-self: start; padding-top: 2px !important; }',
+        '  .dsh-archives-table td:nth-child(2) { grid-column: 2 / span 2; grid-row: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+        '  .dsh-archives-table td:nth-child(3) { grid-column: 2; grid-row: 2; opacity: 0.62; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+        '  .dsh-archives-table td:nth-child(4) { grid-column: 3; grid-row: 2; opacity: 0.62; white-space: nowrap; }',
+        '  .dsh-archives-table td:nth-child(5) { grid-column: 1 / span 3; grid-row: 3; padding-top: 6px !important; }',
+        '}',
+      ].join('\n')
+      document.head.appendChild(style)
+    }
+
     function cwdLabel(cwd) {
       if (typeof cwd !== 'string' || cwd.length === 0) return '—'
       const parts = cwd.split('/').filter(Boolean)
@@ -286,6 +310,9 @@ window.__ModuleLoader__.load({
       const [selected, setSelected] = react.useState([])
       const [confirmId, setConfirmId] = react.useState(null)
       const [deleting, setDeleting] = react.useState(false)
+      react.useEffect(() => {
+        installArchivesMobileStyle()
+      }, [])
       const archivedIds = useWorkspaces((s) => s.archivedSessionIds)
       const byId = useSessions((s) => s.byId)
 
@@ -439,7 +466,7 @@ window.__ModuleLoader__.load({
         ),
         rows.length > 0 && react.createElement(
           'table',
-          { style: { ...TABLE, marginTop: '6px' } },
+          { style: { ...TABLE, marginTop: '6px' }, className: 'dsh-archives-table' },
           react.createElement(
             'thead',
             null,
@@ -547,8 +574,28 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    function installHeaderCompactStyle() {
+      if (document.getElementById('dsh-header-compact-css') !== null) return
+      const style = document.createElement('style')
+      style.id = 'dsh-header-compact-css'
+      // Phone header row: the hamburger eats 56px, the Session log pill is
+      // hidden (mobile.js), and the balance chip + seat button still crowd
+      // the session title. Drop the "余额" word so the money stays visible
+      // while the title keeps as much room as possible.
+      style.textContent = [
+        '@media (max-width: 760px), (pointer: coarse) and (max-width: 960px) {',
+        '  .dsh-balance-chip { gap: 4px; padding: 6px 10px; height: 28px; }',
+        '  .dsh-balance-chip-label { display: none; }',
+        '}',
+      ].join('\n')
+      document.head.appendChild(style)
+    }
+
     function BalanceChip({ gateway }) {
       const [state, setState] = react.useState({ loading: true, infos: null, error: '' })
+      react.useEffect(() => {
+        installHeaderCompactStyle()
+      }, [])
       const refresh = () => {
         setState((s) => ({ ...s, loading: true, error: '' }))
         gateway.balance().then((r) => {
@@ -588,11 +635,12 @@ window.__ModuleLoader__.load({
       return react.createElement(
         'span',
         {
+          className: 'dsh-balance-chip',
           style: CHIP,
           title,
           onClick: openRecharge,
         },
-        react.createElement('span', null, '余额'),
+        react.createElement('span', { className: 'dsh-balance-chip-label' }, '余额'),
         react.createElement('span', { style: CHIP_VALUE }, state.loading ? '…' : money),
         react.createElement('button', {
           style: CHIP_REFRESH,
@@ -930,10 +978,10 @@ window.__ModuleLoader__.load({
               const bound = r.lan?.bound === true
               if (tries >= 15 || (want && bound) || (!want && !bound)) {
                 setNotice(want && bound
-                  ? { text: '局域网访问已开启 ✓（手机访问根地址，自动适配手机）', kind: 'ok' }
+                  ? { text: '移动端访问已开启 ✓（手机访问根地址，自动适配手机）', kind: 'ok' }
                   : want
                     ? { text: '服务重启失败，请重试', kind: 'err' }
-                    : { text: '局域网访问已关闭', kind: 'ok' })
+                    : { text: '移动端访问已关闭', kind: 'ok' })
                 return
               }
             }
@@ -995,7 +1043,7 @@ window.__ModuleLoader__.load({
             },
           },
           react.createElement('span', { style: ROW_LABEL },
-            react.createElement('span', { style: { fontWeight: 600 } }, '局域网访问（手机端）'),
+            react.createElement('span', { style: { fontWeight: 600 } }, '移动端访问'),
             react.createElement('span', { style: ROW_HINT }, '手机与电脑连同一 Wi-Fi 即可使用完整界面（自动适配手机屏幕：侧边栏抽屉 + 全屏会话），会话与任务实时同步。开启后服务监听局域网并自动重启；局域网内的设备都能访问本服务，请仅在可信网络开启')),
           react.createElement('span', { style: { display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 } },
             react.createElement('span', { style: { fontSize: 11, color: cfg?.lanAccess === true ? OK : 'rgba(154,163,181,1)' } },
@@ -1006,7 +1054,7 @@ window.__ModuleLoader__.load({
                 style: { position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, margin: 0, cursor: 'pointer', zIndex: 1 },
                 onChange: (e) => {
                   save({ lanAccess: e.target.checked })
-                  setNotice({ text: '正在重启服务以应用局域网设置…', kind: 'ok' })
+                  setNotice({ text: '正在重启服务以应用移动端访问设置…', kind: 'ok' })
                   pollLan(e.target.checked)
                 },
               }),
@@ -1035,7 +1083,7 @@ window.__ModuleLoader__.load({
           { style: { display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px', borderRadius: '10px', border: '1px solid rgba(128,140,160,0.3)', background: 'transparent' } },
           react.createElement('div', { style: { fontSize: '12.5px', fontWeight: 600 } }, '手机访问'),
           lan.qr && react.createElement('img', {
-            src: lan.qr, alt: '局域网访问二维码', width: 172, height: 172,
+            src: lan.qr, alt: '移动端访问二维码', width: 172, height: 172,
             style: { borderRadius: '8px', background: '#FFFFFF', padding: '6px' },
           }),
           react.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
@@ -1050,7 +1098,7 @@ window.__ModuleLoader__.load({
         cfg?.lanAccess === true && lan && !lan.bound && react.createElement(
           'div',
           { style: { fontSize: '12px', padding: '8px 0', opacity: 0.7 } },
-          '正在重启服务以应用局域网设置，请稍候…',
+          '正在重启服务以应用移动端访问设置，请稍候…',
         ),
         react.createElement(
           'div',
@@ -1540,16 +1588,35 @@ window.__ModuleLoader__.load({
       if (document.getElementById('dsh-price-hours-css') !== null) return
       const style = document.createElement('style')
       style.id = 'dsh-price-hours-css'
-      style.textContent = '.uV2eYG_row { position: relative; }'
+      // Wide screens keep the absolutely-centered chip (deliberate v1.3.8
+      // design). On the narrow/touch phone layout the centered chip overlaps
+      // the model chip, so it joins the trailing flex row as a normal first
+      // item instead — the row can never overlap, it just shrinks the model
+      // label (which already ellipsizes) when space is tight.
+      style.textContent = [
+        '.uV2eYG_row { position: relative; }',
+        '@media (max-width: 760px), (pointer: coarse) and (max-width: 960px) {',
+        '  .dsh-price-hint { position: static !important; left: auto !important; top: auto !important; transform: none !important; margin-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }',
+        '}',
+      ].join('\n')
       document.head.appendChild(style)
     }
 
     function PriceHoursHint() {
       const [now, setNow] = react.useState(() => Date.now())
+      const [narrow, setNarrow] = react.useState(() =>
+        window.matchMedia('(max-width: 760px), (pointer: coarse) and (max-width: 960px)').matches,
+      )
       react.useEffect(() => {
         installPriceHoursStyle()
         const timer = window.setInterval(() => setNow(Date.now()), 30 * 1000)
-        return () => window.clearInterval(timer)
+        const mq = window.matchMedia('(max-width: 760px), (pointer: coarse) and (max-width: 960px)')
+        const onMq = () => setNarrow(mq.matches)
+        mq.addEventListener('change', onMq)
+        return () => {
+          window.clearInterval(timer)
+          mq.removeEventListener('change', onMq)
+        }
       }, [])
       const peak = pricePhase(now) === 'peak'
       const { hours, minutes } = beijingClock(now)
@@ -1558,9 +1625,41 @@ window.__ModuleLoader__.load({
       const title = peak
         ? `高峰时段（北京时间 9:00–12:00 / 14:00–18:00）· 按标准价格计费。非高峰时段价格为高峰时段的一半。当前北京时间 ${hh}:${mm}。`
         : `非高峰时段 · 价格为高峰时段的一半（5 折）。高峰时段为北京时间 9:00–12:00 / 14:00–18:00。当前北京时间 ${hh}:${mm}。`
+      // Phone layout: the tool row also holds the attach/modes controls, the
+      // model chip, the context ring and send — a dot + full 5-char label no
+      // longer fits. Render a compact colored label ("高峰"/"非高峰") instead
+      // and let the row place it as a normal flex item (see the injected CSS);
+      // the dot is dropped because the text itself carries the color cue.
+      if (narrow) {
+        return react.createElement(
+          'span',
+          {
+            className: 'dsh-price-hint',
+            style: {
+              display: 'inline-flex',
+              alignItems: 'center',
+              border: 'none',
+              background: 'transparent',
+              color: peak ? WARN : OK,
+              fontSize: '12px',
+              fontWeight: 500,
+              opacity: 0.85,
+              padding: 0,
+              fontFamily: 'inherit',
+              lineHeight: '20px',
+              cursor: 'default',
+              whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+            },
+            title,
+          },
+          peak ? '高峰' : '非高峰',
+        )
+      }
       return react.createElement(
         'span',
         {
+          className: 'dsh-price-hint',
           style: {
             // Absolutely centered inside the composer tool row (the injected
             // stylesheet gives the row position:relative); the row flexes
@@ -1722,7 +1821,10 @@ window.__ModuleLoader__.load({
             }
             el = el.parentElement
           }
-          setPaneLeft(left)
+          // On the phone layout the pane's left edge is the viewport edge and
+          // `cardRect.left - 30` goes negative, which would park the rail off
+          // screen. Clamp to the free gutter instead (messages start at ~32px).
+          setPaneLeft(Math.max(left, 4))
         }
         place()
         window.addEventListener('resize', place)

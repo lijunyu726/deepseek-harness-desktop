@@ -88,15 +88,20 @@ await cp(sourceApp, coldApp, { recursive: true, preserveTimestamps: true, verbat
 const debugPort = await freePort()
 const output = createWriteStream(stdoutPath, { flags: 'wx', mode: 0o600 })
 await once(output, 'open')
+const childEnv = {
+  ...process.env,
+  DSH_HOME: dshHome,
+  DSH_USER_DATA_DIR: userData,
+}
+// When this script runs from inside the desktop's Electron-as-Node context
+// (e.g. the app's own terminal), the leaked ELECTRON_RUN_AS_NODE makes the
+// app binary boot as plain Node and reject the Chrome debugging flags below.
+delete childEnv.ELECTRON_RUN_AS_NODE
 const child = spawn(join(coldApp, 'Contents', 'MacOS', 'DeepSeek Harness'), [
   '--remote-debugging-address=127.0.0.1',
   `--remote-debugging-port=${debugPort}`,
 ], {
-  env: {
-    ...process.env,
-    DSH_HOME: dshHome,
-    DSH_USER_DATA_DIR: userData,
-  },
+  env: childEnv,
   stdio: ['ignore', output, output],
 })
 
