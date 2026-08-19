@@ -1490,10 +1490,12 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // — 高峰 / 空闲时段提示 -----------------------------------------------------
-    // DeepSeek 计费：空闲时段价格为高峰时段的一半；高峰时段为北京时间
-    // 9:00–12:00 与 14:00–18:00，其余为空闲时段。北京时间无夏令时（UTC+8），
-    // 因此直接从浏览器时钟按 UTC+8 换算，无需网络或 Host。
+    // — 高峰 / 非高峰时段提示 ----------------------------------------------------
+    // DeepSeek 计费：非高峰时段价格为高峰时段的一半；高峰时段为北京时间
+    // 9:00–12:00 与 14:00–18:00，其余为非高峰。北京时间无夏令时（UTC+8），
+    // 直接从浏览器时钟按 UTC+8 换算，无需网络或 Host。
+    // 挂载在输入卡底部工具行（uV2eYG_row）内，绝对定位在行中央；行级
+    // position:relative 由注入的样式表提供，无需任何测量代码。
     const PEAK_WINDOWS_MIN = [[9 * 60, 12 * 60], [14 * 60, 18 * 60]]
 
     function beijingClock(now) {
@@ -1509,64 +1511,21 @@ window.__ModuleLoader__.load({
       return PEAK_WINDOWS_MIN.some(([start, end]) => t >= start && t < end) ? 'peak' : 'offpeak'
     }
 
+    function installPriceHoursStyle() {
+      if (document.getElementById('dsh-price-hours-css') !== null) return
+      const style = document.createElement('style')
+      style.id = 'dsh-price-hours-css'
+      style.textContent = '.uV2eYG_row { position: relative; }'
+      document.head.appendChild(style)
+    }
+
     function PriceHoursHint() {
       const [now, setNow] = react.useState(() => Date.now())
-      const [pos, setPos] = react.useState(null)
       react.useEffect(() => {
+        installPriceHoursStyle()
         const timer = window.setInterval(() => setNow(Date.now()), 30 * 1000)
         return () => window.clearInterval(timer)
       }, [])
-      // Pin the chip to the middle of the conversation pane's top bar (the
-      // wSkVaW_header title row). Measured from the composer card's wide
-      // ancestor so it works even when the header chrome itself is hidden
-      // (blank new session): fixed coords = pane center, 12px below the pane
-      // top, the same visual seat the header title row occupies.
-      const place = react.useCallback(() => {
-        const composer = document.querySelector('[data-composer-card]')
-        if (!(composer instanceof HTMLElement)) return
-        const cardRect = composer.getBoundingClientRect()
-        if (cardRect.width === 0) return
-        let el = composer.parentElement
-        let paneRect = null
-        while (el) {
-          const r = el.getBoundingClientRect()
-          // The pane column is the TOP-ANCHORED wide ancestor: the composer
-          // seat is also wide but sits at the bottom (top > 0), and the
-          // header, when visible, starts above the scroll body — so the
-          // first match with top ≈ 0 is the pane (header hidden: scroll
-          // body at 0; header visible: the root at 0).
-          if (r.width > cardRect.width + 300 && r.left > 0 && r.top <= 4) {
-            paneRect = r
-            break
-          }
-          el = el.parentElement
-        }
-        if (paneRect === null) return
-        // Vertical seat: the CENTER of the visible header (title row + tab
-        // row). When the header is hidden (blank new session) fall back to
-        // the title-row seat at the pane top.
-        const headerEl = document.querySelector('.wSkVaW_header')
-        const hr = headerEl === null ? null : headerEl.getBoundingClientRect()
-        const headerVisible = headerEl !== null && hr !== null && hr.height > 0 && getComputedStyle(headerEl).display !== 'none'
-        const top = headerVisible ? hr.top + hr.height / 2 - 16 : paneRect.top + 12
-        setPos({ left: paneRect.left + paneRect.width / 2, top })
-      }, [])
-      react.useEffect(() => {
-        place()
-        window.addEventListener('resize', place)
-        const observer = new ResizeObserver(() => place())
-        observer.observe(document.body)
-        // The header appears/disappears inside one session (blank → first
-        // message): re-seat the chip when its visibility class flips.
-        const headerEl = document.querySelector('.wSkVaW_header')
-        const classObs = headerEl === null ? null : new MutationObserver(() => place())
-        if (classObs !== null) classObs.observe(headerEl, { attributes: true, attributeFilter: ['class'] })
-        return () => {
-          window.removeEventListener('resize', place)
-          observer.disconnect()
-          if (classObs !== null) classObs.disconnect()
-        }
-      }, [place])
       const peak = pricePhase(now) === 'peak'
       const { hours, minutes } = beijingClock(now)
       const hh = String(hours).padStart(2, '0')
@@ -1578,26 +1537,30 @@ window.__ModuleLoader__.load({
         'span',
         {
           style: {
-            position: 'fixed',
-            left: pos === null ? 0 : pos.left,
-            top: pos === null ? 0 : pos.top,
-            transform: 'translateX(-50%)',
-            visibility: pos === null ? 'hidden' : 'visible',
-            zIndex: 5,
-            height: '32px',
+            // Absolutely centered inside the composer tool row (the injected
+            // stylesheet gives the row position:relative); the row flexes
+            // around it, so the chip always occupies the visual middle with
+            // no measurement or resize handling. Font matches the row's
+            // other controls (13px / 500 / 20px).
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '5px',
+            gap: '6px',
             border: 'none',
             background: 'transparent',
             color: 'inherit',
-            fontSize: '16px',
+            fontSize: '13px',
+            fontWeight: 500,
             opacity: 0.62,
-            padding: '0 8px',
+            padding: '0 4px',
             fontFamily: 'inherit',
-            lineHeight: '22px',
+            lineHeight: '20px',
             cursor: 'default',
             whiteSpace: 'nowrap',
+            pointerEvents: 'none',
           },
           title,
         },
@@ -3176,13 +3139,13 @@ window.__ModuleLoader__.load({
           StatsStyleChip,
         ),
       )
-      // 高峰 / 非高峰时段提示：固定定位在会话页顶部栏（wSkVaW_header）中央。
-      // 挂载在 input.dock —— 任何活跃会话都渲染（包括 header 被隐藏的 blank
-      // 新会话），组件自行测量会话面板矩形后用 fixed 坐标钉在标题行位置。
-      ctx.slots.inject('conversation.input.dock', () =>
+      // 高峰 / 非高峰时段提示：挂在输入卡底部工具行（uV2eYG_row）的 right
+      // 席位，组件绝对定位在行中央（行级 position:relative 由注入样式提供），
+      // 字号与行内其他控件一致（13px / 500 / 20px）。
+      ctx.slots.inject('conversation.input.right', () =>
         ctx.slots.register(
           {
-            name: 'conversation.input.dock',
+            name: 'conversation.input.right',
             id: 'price-hours',
             order: 90,
           },
