@@ -579,11 +579,17 @@ window.__ModuleLoader__.load({
       const style = document.createElement('style')
       style.id = 'dsh-header-compact-css'
       // Phone header row: the hamburger eats 56px, the Session log pill is
-      // hidden (mobile.js), and the balance chip + seat button still crowd
-      // the session title. Drop the "余额" word so the money stays visible
-      // while the title keeps as much room as possible.
+      // hidden (the same log view stays reachable through the 轨迹 tab), and
+      // the balance chip drops its "余额" word. The session title then takes
+      // the whole first line while the 标准模式 / background-task chips wrap
+      // onto a second line — without the wrap, the fixed-width chips overflow
+      // the flex row and pile on top of each other in the middle (the shell's
+      // headerActions live INSIDE titleCluster, so the cluster itself wraps).
       style.textContent = [
         '@media (max-width: 760px), (pointer: coarse) and (max-width: 960px) {',
+        '  .nL4_yW_sessionLogButton { display: none !important; }',
+        '  .wSkVaW_titleCluster { flex-wrap: wrap !important; row-gap: 4px !important; }',
+        '  .wSkVaW_crumbs { flex: 1 1 100% !important; min-width: 0 !important; }',
         '  .dsh-balance-chip { gap: 4px; padding: 6px 10px; height: 28px; }',
         '  .dsh-balance-chip-label { display: none; }',
         '}',

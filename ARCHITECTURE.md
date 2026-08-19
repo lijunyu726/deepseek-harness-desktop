@@ -10,7 +10,7 @@ Electron 主进程用 Electron 自带的 Node 运行时（`ELECTRON_RUN_AS_NODE=
 
 ## 双面 Cordis 插件（`@deepseek-ai/dsh-desktop`）
 
-`assets/desktop.patch.yml` 以 insert 形式挂载插件。`DshServer.ensurePluginFallback()` 在启动前把打包的插件软链进 profile 的模块回退目录。插件主机端（`lib/index.js`）通过 Typert 远程（`globalInstructions/*`，SRC 反射模式）暴露全部业务面；浏览器端（`lib/client.js`）是一个客户端模块 bundle（`window.__ModuleLoader__.load`），注册设置分类与会话页界面；`lib/mobile.js` 在服务端注入 index.html 引导脚本（工作区自选 + 手机抽屉布局）。引导脚本幂等安装——媒体查询变化（旋转/分屏/跨断点）重入时只重跑布局强化，不重复注入样式/遮罩/汉堡按钮；窄屏下隐藏头部 Session log 胶囊、常驻会话行「…」菜单（触屏无悬停）、设置面板打开时隐藏汉堡按钮（`:has(.VOzbGW_overlay)` + MutationObserver 兜底）。
+`assets/desktop.patch.yml` 以 insert 形式挂载插件。`DshServer.ensurePluginFallback()` 在启动前把打包的插件软链进 profile 的模块回退目录。插件主机端（`lib/index.js`）通过 Typert 远程（`globalInstructions/*`，SRC 反射模式）暴露全部业务面；浏览器端（`lib/client.js`）是一个客户端模块 bundle（`window.__ModuleLoader__.load`），注册设置分类与会话页界面；`lib/mobile.js` 在服务端注入 index.html 引导脚本（工作区自选 + 手机抽屉布局）。引导脚本幂等安装——媒体查询变化（旋转/分屏/跨断点）重入时只重跑布局强化，不重复注入样式/遮罩/汉堡按钮；窄屏下常驻会话行「…」菜单（触屏无悬停）、设置面板打开时隐藏汉堡按钮（`:has(.VOzbGW_overlay)` + MutationObserver 兜底）。头部窄屏适配在客户端 bundle（`installHeaderCompactStyle`，随页面加载热更新、无需重启应用）：隐藏 Session log 胶囊、余额芯片去「余额」词紧凑化、`titleCluster` 内部换行——标题独占第一行，标准模式/后台任务芯片落第二行，避免固定宽度芯片溢出 flex 行后在中部互相叠压（headerActions 是 titleCluster 的子元素，因此换行发生在簇内部）。
 
 ### 设置分类（`settings.section`）
 
