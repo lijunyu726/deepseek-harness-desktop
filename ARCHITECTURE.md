@@ -63,7 +63,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 ## 工作区删除与高峰时段提示（v1.3.1 – v1.3.8）
 
 - **工作区删除连带删除会话**：宿主 `workspace.delete` 删除注册前捕获 `workspace.sessionIds`，逐个执行与单会话删除相同的 teardown；单会话失败只告警不回滚。`origin === "subagent"` 的会话跳过（随父会话 teardown 清理，且从不作为顶层行渲染，不会落入 Ungrouped）。客户端删除后刷新会话基线，冷会话（无 live 帧）立即从列表消失。
-- **归档管理删除**：插件宿主新增 `deleteSessions` remote（批量、每步超时兜底）；客户端多选 + 行内二次确认 + 15s 总超时兜底。
+- **归档管理删除（v1.3.9 重做）**：插件宿主 `deleteSessions` remote（批量、每步超时兜底）改为**逐会话委托 ApiProxy 的 `workspace.deleteSession`**——与侧边栏删除同一条 teardown（停活体 agent → 解绑注册 → 删持久日志），因为 agent 工厂的解绑闭包是模块私有的，插件侧只做 `cancel + scope.dispose` 会留下 live 注册，被删会话以幽灵形式重回「未分组」（v1.3.1 版本的缺陷）。幽灵场景（日志已删但仍在 live 注册）下 teardown 先处置后报 session-not-found，宿主以「无 live 残留即视为删除成功」兜底。客户端单选删除二次确认内联在行原位（确认删除/取消与删除按钮同排），多选批量删除用顶部批量确认条；删除落库后 `gateway.refreshSessions()` 重拉会话基线，冷会话立即从侧边栏消失。无 ApiProxy 的宿主回退到 best-effort 序列。
 - **高峰/非高峰时段提示**：纯客户端组件 `PriceHoursHint`，浏览器时钟按 UTC+8 换算北京时间（无夏令时），9:00–12:00 / 14:00–18:00 判为高峰，其余为非高峰（价格为高峰一半）；30 秒刷新，仅两个标签，字号与工具行控件一致（13px/500/20px）。v1.3.8 定版：挂载在 `conversation.input.right`（位于输入卡底部工具行 `uV2eYG_row` 内），注入样式 `.uV2eYG_row{position:relative}` 后组件以 `position:absolute + translate(-50%,-50%)` 落在行中央——无测量代码，水平/垂直都随行自适应。迭代史上依次弃用的挂载：composer.dock → header.utilities → input.dock（fixed 定位 + 面板矩形测量）；v1.3.4 修复了 `Date.now()` 时间戳被误当 Date 实例的渲染崩溃（这是此前任何位置都看不到提示的根因）。
 - **历史 Prompt 按会话隔离（v1.3.2）**：宿主记录每条 prompt 时携带 `String(agent.id)` 会话归属；`promptHistory(limit, sessionId)` remote 按会话过滤；客户端 `PromptHistoryRail` 从槽位 standard kit 解构 `sessionId` 并随会话切换重载。外观不变，仅数据范围收敛到当前会话。
 

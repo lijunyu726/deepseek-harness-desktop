@@ -881,14 +881,19 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
 
   /**
    * Permanently delete one or more sessions (single id or batch) from the
-   * settings → 归档管理 page. Mirrors the workspace delete handler's
-   * teardown so the two paths behave identically: flush the attached
-   * session (best effort — a ghost's log is already gone and flushing may
-   * ENOENT), cancel and drain the live agent under deadlines, purge the
-   * durable log through the workspace registry, then force-remove any
-   * residual live registrations. Every step settles or times out, so the
-   * dialog can never freeze on "正在删除…" and a deleted session can never
-   * linger in the sidebar as a ghost.
+   * settings → 归档管理 page. Each id is torn down through the Host
+   * ApiProxy's own `workspace.deleteSession` — the exact same path the
+   * sidebar delete uses. That matters: the agent factory's detach steps are
+   * private closures, so a plugin-side `cancel() + scope.dispose()` leaves
+   * the live session inside the session store and the deleted session
+   * ghosts back into the sidebar under「未分组」. The ApiProxy path disposes
+   * the agent through its owning handle (agent + session registrations
+   * detach, `session/disposed` is broadcast, and the client removes the row
+   * via `host/session-removed`), then purges the durable log and the
+   * workspace/archive accounting. Every step settles or times out, so the
+   * dialog can never freeze on「正在删除…」.
+   * When the ApiProxy is absent (a host without the web API surface), fall
+   * back to a best-effort sequence so the call still settles.
    * @param sessionIds - one session id or an array of session ids.
    * @returns per-id results plus the current archive set.
    */
@@ -896,39 +901,62 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
     try {
       const registry = this.ctx.get('workspaceRegistry')
       if (registry === undefined) return { ok: false, error: 'workspaceRegistry 服务不可用' }
-      const sessions = this.ctx.get('sessions')
-      const agents = this.ctx.agents
       const ids = (Array.isArray(sessionIds) ? sessionIds : [sessionIds])
         .map((id) => String(id ?? ''))
         .filter((id) => id.length > 0)
       if (ids.length === 0) return { ok: false, error: '缺少会话 id' }
+      const apiProxy = this.ctx.get('apiProxy')
       const results = []
       for (const id of ids) {
         try {
-          const attached = sessions === undefined ? undefined : sessions.get(id)
-          if (attached !== undefined) {
-            try {
-              await sessions.flush(attached)
-            } catch (flushError) {
-              // Ghost session: the durable log is already gone. Keep going —
-              // the delete must still purge the registries and records.
-            }
-          }
-          const live = agents.get(id)
-          if (live !== undefined) {
-            try { live.cancel({ kind: 'disposed' }) } catch {}
-            try {
-              await raceDeadline(live.whenIdle(), DELETE_AGENT_IDLE_TIMEOUT_MS, `agent "${id}" did not go idle`)
-            } catch {}
-            try {
-              if (typeof live.scope?.dispose === 'function') {
-                await raceDeadline(live.scope.dispose(), DELETE_AGENT_DISPOSE_TIMEOUT_MS, `agent "${id}" scope dispose timed out`)
+          if (apiProxy !== undefined) {
+            const response = await apiProxy.workspace.deleteSession({ payload: { sessionId: id } })
+            if (response?.result?.ok !== true) {
+              const message = response?.result?.error?.message ?? '删除被拒绝'
+              // The ApiProxy teardown disposes a live agent BEFORE its
+              // registry knowledge check: a ghost session (durable log
+              // already gone but still registered live) ends the call with
+              // session-not-found, yet the disposal has already removed
+              // every live registration. If nothing live remains, the goal
+              // (彻底从电脑上消失) is achieved — count it as deleted.
+              const sessions = this.ctx.get('sessions')
+              const stillLive = (sessions !== undefined && sessions.get(id) !== undefined) || this.ctx.agents.get(id) !== undefined
+              if (!stillLive) {
+                results.push({ id, ok: true })
+                continue
               }
-            } catch {}
+              results.push({ id, ok: false, error: message })
+              continue
+            }
+          } else {
+            // Best-effort teardown for hosts without the web API surface:
+            // flush, stop the live agent, then purge registry + persistence.
+            const sessions = this.ctx.get('sessions')
+            const agents = this.ctx.agents
+            const attached = sessions === undefined ? undefined : sessions.get(id)
+            if (attached !== undefined) {
+              try {
+                await sessions.flush(attached)
+              } catch {
+                /* ghost session: the durable log is already gone */
+              }
+            }
+            const live = agents.get(id)
+            if (live !== undefined) {
+              try { live.cancel({ kind: 'disposed' }) } catch {}
+              try {
+                await raceDeadline(live.whenIdle(), DELETE_AGENT_IDLE_TIMEOUT_MS, `agent "${id}" did not go idle`)
+              } catch {}
+              try {
+                if (typeof live.scope?.dispose === 'function') {
+                  await raceDeadline(live.scope.dispose(), DELETE_AGENT_DISPOSE_TIMEOUT_MS, `agent "${id}" scope dispose timed out`)
+                }
+              } catch {}
+            }
+            await registry.deleteSession(id)
+            try { agents.remove?.(id) } catch {}
+            try { sessions?.remove?.(id) } catch {}
           }
-          await registry.deleteSession(id)
-          try { agents.remove?.(id) } catch {}
-          try { sessions?.remove?.(id) } catch {}
           results.push({ id, ok: true })
         } catch (err) {
           results.push({ id, ok: false, error: String(err?.message ?? err) })

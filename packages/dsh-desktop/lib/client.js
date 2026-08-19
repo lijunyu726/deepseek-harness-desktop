@@ -275,8 +275,10 @@ window.__ModuleLoader__.load({
      * 设置 → 归档管理：列出注册表级归档集合中的会话，提供「取消归档」和
      * 「删除」（单个 + 多选批量）。删除走 host remote（deleteSessions）；
      * 宿主流在注册表变化后推送 host/archived-sessions-changed，列表与
-     * 侧边栏自动同步。删除确认用行内二次确认；remote 内部每步都有超时
-     * 兜底，客户端另有总超时，界面绝不会卡死在「正在删除…」。
+     * 侧边栏自动同步。单选删除的二次确认内联在该行原位（确认删除/取消
+     * 与删除按钮放一起），多选批量删除用顶部批量确认条；删除落库后刷新
+     * 客户端会话基线，被删会话立刻从侧边栏消失，不会残留在「未分组」。
+     * remote 内部每步都有超时兜底，客户端另有总超时，界面绝不会卡死。
      */
     function ArchivesSection({ gateway, useSessions, useWorkspaces }) {
       const [notice, setNotice] = react.useState({ text: '', kind: '' })
@@ -300,6 +302,9 @@ window.__ModuleLoader__.load({
       const unarchive = (id) => {
         if (busyId !== null || deleting) return
         setBusyId(id)
+        // The row leaves this list on success; drop its pending inline
+        // delete confirmation so a later re-archive cannot resurrect it.
+        if (confirmId === id) setConfirmId(null)
         gateway.unarchiveSession(id).then(
           (r) => {
             if (r && r.ok) setNotice({ text: '已取消归档 ✓（会话回到侧边栏原分组）', kind: 'ok' })
@@ -355,12 +360,19 @@ window.__ModuleLoader__.load({
         } finally {
           setDeleting(false)
           setConfirmId(null)
+          // The Host purge is durable once the RPC settles; re-pull the
+          // session baseline so every deleted cold session leaves the
+          // sidebar immediately instead of ghosting into the ungrouped
+          // bucket (a cold session emits no live removed frame).
+          try {
+            await gateway.refreshSessions()
+          } catch {
+            /* best effort: the host stream still converges the archives list */
+          }
         }
       }
 
-      const confirmRow = confirmId !== null && confirmId !== '__bulk__'
-        ? rows.find((row) => row.id === confirmId) ?? { id: confirmId, title: String(confirmId) }
-        : null
+      const confirmBulk = confirmId === '__bulk__' && selected.length > 0
 
       return react.createElement(
         'div',
@@ -402,15 +414,13 @@ window.__ModuleLoader__.load({
             },
           }, '取消选择'),
         ),
-        confirmId !== null && react.createElement(
+        confirmBulk && react.createElement(
           'div',
           { style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', border: '1px solid rgba(229,72,77,0.45)', borderRadius: '8px', fontSize: 12, marginTop: '4px', flexWrap: 'wrap' } },
           react.createElement(
             'span',
             { style: { flex: '1 1 320px' } },
-            confirmId === '__bulk__'
-              ? `确定要永久删除已选的 ${selected.length} 个会话及其全部对话记录吗？此操作不可撤销。`
-              : `确定要永久删除会话「${confirmRow.title}」及其全部对话记录吗？此操作不可撤销。`,
+            `确定要永久删除已选的 ${selected.length} 个会话及其全部对话记录吗？此操作不可撤销。`,
           ),
           react.createElement('button', {
             style: SMALL_BTN,
@@ -421,10 +431,9 @@ window.__ModuleLoader__.load({
             style: { ...SMALL_BTN, borderColor: 'rgba(229,72,77,0.5)', color: ERR },
             disabled: deleting,
             onClick: () => {
-              const ids = confirmId === '__bulk__'
-                ? rows.filter((row) => selected.includes(row.id)).map((row) => row.id)
-                : [confirmId]
+              const ids = rows.filter((row) => selected.includes(row.id)).map((row) => row.id)
               if (ids.length > 0) void doDelete(ids)
+              else setConfirmId(null)
             },
           }, deleting ? '正在删除…' : '确认删除'),
         ),
@@ -463,23 +472,39 @@ window.__ModuleLoader__.load({
                 react.createElement('td', { style: TD, title: row.cwd ?? '' }, cwdLabel(row.cwd)),
                 react.createElement('td', { style: TD }, fmtDay(row.updatedAt)),
                 react.createElement('td', { style: TD },
-                  react.createElement(
-                    'div',
-                    { style: { display: 'flex', alignItems: 'center', gap: '14px' } },
-                    react.createElement('button', {
-                      style: SMALL_BTN,
-                      disabled: busyId !== null || deleting,
-                      onClick: () => unarchive(row.id),
-                    }, busyId === row.id ? '处理中…' : '取消归档'),
-                    react.createElement('button', {
-                      style: { ...DELETE_BTN, width: 'auto' },
-                      disabled: busyId !== null || deleting,
-                      onClick: () => {
-                        setConfirmId(row.id)
-                        setNotice({ text: '', kind: '' })
-                      },
-                    }, '删除'),
-                  ),
+                  confirmId === row.id
+                    ? react.createElement(
+                      'div',
+                      { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+                      react.createElement('span', { style: { fontSize: '11px', color: ERR } }, '将永久删除'),
+                      react.createElement('button', {
+                        style: { ...SMALL_BTN, borderColor: 'rgba(229,72,77,0.5)', color: ERR, fontWeight: 600 },
+                        disabled: deleting,
+                        onClick: () => void doDelete([row.id]),
+                      }, deleting ? '正在删除…' : '确认删除'),
+                      react.createElement('button', {
+                        style: SMALL_BTN,
+                        disabled: deleting,
+                        onClick: () => setConfirmId(null),
+                      }, '取消'),
+                    )
+                    : react.createElement(
+                      'div',
+                      { style: { display: 'flex', alignItems: 'center', gap: '14px' } },
+                      react.createElement('button', {
+                        style: SMALL_BTN,
+                        disabled: busyId !== null || deleting,
+                        onClick: () => unarchive(row.id),
+                      }, busyId === row.id ? '处理中…' : '取消归档'),
+                      react.createElement('button', {
+                        style: { ...DELETE_BTN, width: 'auto' },
+                        disabled: busyId !== null || deleting,
+                        onClick: () => {
+                          setConfirmId(row.id)
+                          setNotice({ text: '', kind: '' })
+                        },
+                      }, '删除'),
+                    ),
                 ),
               ),
             ),
@@ -2723,6 +2748,15 @@ window.__ModuleLoader__.load({
         storageUsage: () => connection.rpc.call('/api', 'globalInstructions/storageUsage', { args: {} }).then(unwrap),
         unarchiveSession: (sessionId) => connection.rpc.call('/api', 'globalInstructions/unarchiveSession', { args: { sessionId } }).then(unwrap),
         deleteSessions: (sessionIds) => connection.rpc.call('/api', 'globalInstructions/deleteSessions', { args: { sessionIds } }).then(unwrap),
+        // Re-pull the client session baseline (single-flight, drops entries
+        // the Host no longer serves). Archive-management deletes use this so
+        // deleted cold sessions vanish from the sidebar instead of ghosting
+        // into the ungrouped bucket.
+        refreshSessions: () => {
+          const sessions = ctx.get('sessions')
+          if (sessions === undefined || typeof sessions.refresh !== 'function') return Promise.resolve()
+          return Promise.resolve(sessions.refresh()).catch(() => {})
+        },
         listSessionCandidates: (sessionId, query, limit) => connection.rpc.call('/api', 'globalInstructions/listSessionCandidates', { args: { sessionId, query, limit } }).then(unwrap),
         listSkills: () => connection.rpc.call('/api', 'globalInstructions/listSkills', { args: {} }).then(unwrap),
         listMcpServers: () => connection.rpc.call('/api', 'globalInstructions/listMcpServers', { args: {} }).then(unwrap),
