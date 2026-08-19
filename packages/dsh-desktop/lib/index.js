@@ -9,9 +9,10 @@
  * typert-generated artifacts required).
  */
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -579,6 +580,12 @@ markRemote('removeMcpServer')
 markRemote('removeSkill')
 markRemote('visionConfig')
 markRemote('saveVisionConfig')
+markRemote('saveUploadFile')
+markRemote('copyFolderUpload')
+markRemote('pickFolderNative')
+markRemote('resolvePickFolder')
+markRemote('getFileIcon')
+markRemote('resolveFileIcon')
 
 export class GlobalInstructionsGateway extends TypertRemoteService {
   static inject = ['agents', 'settings', 'loader']
@@ -1348,9 +1355,242 @@ export class GlobalInstructionsGateway extends TypertRemoteService {
       return { ok: false, error: String(err?.message ?? err) }
     }
   }
+
+  /**
+   * Persist one pasted/uploaded binary file inside the owning session's
+   * folder (`$DSH_HOME/sessions/<project>/<sessionId>/uploads/`) so it is
+   * deleted together with the session. When the session folder cannot be
+   * located (brand-new session before its first durable write), fall back
+   * to `$DSH_HOME/uploads/<sessionId>/`. Name is sanitized, de-duplicated;
+   * content arrives as base64.
+   */
+  saveUploadFile(input) {
+    try {
+      const rawName = String(input?.name ?? 'file')
+      const name = rawName.replace(/[\\/:*?"<>|]/g, '_').replace(/^\.+/, '').slice(0, 120) || 'file'
+      const data = String(input?.data ?? '')
+      const sessionId = String(input?.sessionId ?? '').replace(/[^A-Za-z0-9-]/g, '')
+      if (data.length === 0) return { ok: false, error: '空文件内容' }
+      // ~15MB file cap (base64 inflates by 4/3; the RPC payload itself is bounded elsewhere).
+      if (data.length > 20 * 1024 * 1024) return { ok: false, error: '文件过大（上限约 15MB），请改用拖拽到工作目录的方式' }
+      const home = process.env.DSH_HOME?.trim() || path.join(homedir(), '.dsh')
+      const shortHome = path.join(homedir(), '.dsh') === home ? '~/.dsh' : home
+      // Locate the session's own directory (its durable log lives there and
+      // session deletion removes the whole directory recursively).
+      let dir = null
+      if (sessionId !== '') {
+        const sessionsRoot = path.join(home, 'sessions')
+        let projects = []
+        try {
+          projects = readdirSync(sessionsRoot)
+        } catch {
+          projects = []
+        }
+        for (const project of projects) {
+          const candidate = path.join(sessionsRoot, project, sessionId)
+          if (existsSync(candidate)) {
+            dir = path.join(candidate, 'uploads')
+            break
+          }
+        }
+        if (dir === null) dir = path.join(home, 'uploads', sessionId)
+      } else {
+        dir = path.join(home, 'uploads')
+      }
+      mkdirSync(dir, { recursive: true })
+      let target = path.join(dir, name)
+      let counter = 1
+      while (existsSync(target)) {
+        const dot = name.lastIndexOf('.')
+        const stem = dot > 0 ? name.slice(0, dot) : name
+        const ext = dot > 0 ? name.slice(dot) : ''
+        target = path.join(dir, `${stem} (${counter})${ext}`)
+        counter += 1
+      }
+      writeFileSync(target, Buffer.from(data, 'base64'))
+      const shortPath = target.startsWith(home) ? path.join(shortHome, path.relative(home, target)) : target
+      return { ok: true, path: target, shortPath }
+    } catch (err) {
+      return { ok: false, error: String(err?.message ?? err) }
+    }
+  }
+
+  /**
+   * Copy a user-picked folder AS A WHOLE into the owning session's uploads
+   * directory (bounded depth/entry/total size), so the message carries one
+   * folder attachment and the agent reads the tree from that path. The
+   * folder disappears with the session (its directory is deleted with the
+   * session log).
+   */
+  copyFolderUpload(input) {
+    const MAX_FILES = 2000
+    const MAX_TOTAL_BYTES = 200 * 1024 * 1024
+    const MAX_DEPTH = 8
+    const src = String(input?.path ?? '').trim()
+    const sessionId = String(input?.sessionId ?? '').replace(/[^A-Za-z0-9-]/g, '')
+    if (src === '') return { ok: false, error: '缺少目录路径' }
+    try {
+      const srcStat = statSync(src)
+      if (!srcStat.isDirectory()) return { ok: false, error: '所选路径不是文件夹' }
+      const home = process.env.DSH_HOME?.trim() || path.join(homedir(), '.dsh')
+      const shortHome = path.join(homedir(), '.dsh') === home ? '~/.dsh' : home
+      let dir = null
+      if (sessionId !== '') {
+        const sessionsRoot = path.join(home, 'sessions')
+        let projects = []
+        try {
+          projects = readdirSync(sessionsRoot)
+        } catch {
+          projects = []
+        }
+        for (const project of projects) {
+          const candidate = path.join(sessionsRoot, project, sessionId)
+          if (existsSync(candidate)) {
+            dir = path.join(candidate, 'uploads')
+            break
+          }
+        }
+        if (dir === null) dir = path.join(home, 'uploads', sessionId)
+      } else {
+        dir = path.join(home, 'uploads')
+      }
+      mkdirSync(dir, { recursive: true })
+      const baseName = path.basename(src) || 'folder'
+      let target = path.join(dir, baseName)
+      let counter = 1
+      while (existsSync(target)) {
+        target = path.join(dir, `${baseName} (${counter})`)
+        counter += 1
+      }
+      let files = 0
+      let totalBytes = 0
+      let truncated = false
+      const walk = (from, to, depth) => {
+        if (truncated || depth > MAX_DEPTH) {
+          truncated = true
+          return
+        }
+        mkdirSync(to, { recursive: true })
+        let entries
+        try {
+          entries = readdirSync(from, { withFileTypes: true })
+        } catch {
+          return
+        }
+        for (const ent of entries) {
+          if (truncated) return
+          const absFrom = path.join(from, ent.name)
+          const absTo = path.join(to, ent.name)
+          if (ent.isDirectory()) {
+            walk(absFrom, absTo, depth + 1)
+            continue
+          }
+          if (!ent.isFile()) continue
+          try {
+            const st = statSync(absFrom)
+            if (files >= MAX_FILES || totalBytes + st.size > MAX_TOTAL_BYTES) {
+              truncated = true
+              return
+            }
+            copyFileSync(absFrom, absTo)
+            files += 1
+            totalBytes += st.size
+          } catch {
+            /* unreadable entry: skip */
+          }
+        }
+      }
+      walk(src, target, 0)
+      const shortPath = target.startsWith(home) ? path.join(shortHome, path.relative(home, target)) : target
+      return { ok: true, name: baseName, path: target, shortPath, files, totalBytes, truncated }
+    } catch (err) {
+      return { ok: false, error: String(err?.message ?? err) }
+    }
+  }
+
+  /**
+   * Ask the Electron shell to open the native folder picker. The shell
+   * answers through `resolvePickFolder` (page → host) because the dsh host
+   * process cannot own Electron dialogs.
+   */
+  pickFolderNative() {
+    return new Promise((resolve) => {
+      const requestId = randomUUID()
+      const timer = setTimeout(() => {
+        pendingFolderPicks.delete(requestId)
+        resolve({ ok: false, error: '文件夹选择超时（120 秒）' })
+      }, 120_000)
+      pendingFolderPicks.set(requestId, { resolve, timer })
+      emitDesktopEvent({ kind: 'pick-folder', requestId })
+    })
+  }
+
+  /** Resolve one native folder-pick request (called from the page bridge). */
+  resolvePickFolder(input) {
+    const requestId = String(input?.requestId ?? '')
+    const pending = pendingFolderPicks.get(requestId)
+    if (pending === undefined) return { ok: true, ignored: true }
+    clearTimeout(pending.timer)
+    pendingFolderPicks.delete(requestId)
+    pending.resolve({ ok: true, path: String(input?.path ?? '') })
+    return { ok: true }
+  }
+
+  /**
+   * Ask the Electron shell for the macOS file/folder icon of one path
+   * (rendered as a data URL in the message attachment cards). The shell
+   * answers through `resolveFileIcon`.
+   */
+  getFileIcon(input) {
+    return new Promise((resolve) => {
+      const filePath = String(input?.path ?? '').trim()
+      if (filePath === '') {
+        resolve({ ok: false, error: 'empty path' })
+        return
+      }
+      const requestId = randomUUID()
+      const timer = setTimeout(() => {
+        pendingIconRequests.delete(requestId)
+        resolve({ ok: false, error: '图标获取超时' })
+      }, 10_000)
+      pendingIconRequests.set(requestId, { resolve, timer })
+      emitDesktopEvent({ kind: 'file-icon', requestId, path: filePath })
+    })
+  }
+
+  /** Resolve one file-icon request (called from the page bridge). */
+  resolveFileIcon(input) {
+    const requestId = String(input?.requestId ?? '')
+    const pending = pendingIconRequests.get(requestId)
+    if (pending === undefined) return { ok: true, ignored: true }
+    clearTimeout(pending.timer)
+    pendingIconRequests.delete(requestId)
+    pending.resolve({ ok: true, dataUrl: String(input?.dataUrl ?? '') })
+    return { ok: true }
+  }
 }
 
 // — Managed patch-block helpers ----------------------------------------------
+/** Extension → MIME for files rebuilt in the browser (unknown → octet-stream). */
+function guessMime(name) {
+  const ext = String(name ?? '').split('.').pop()?.toLowerCase() ?? ''
+  const table = {
+    txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', html: 'text/html', htm: 'text/html',
+    css: 'text/css', js: 'text/javascript', mjs: 'text/javascript', cjs: 'text/javascript',
+    ts: 'text/typescript', tsx: 'text/typescript', jsx: 'text/javascript', json: 'application/json',
+    xml: 'application/xml', yml: 'application/yaml', yaml: 'application/yaml', toml: 'application/toml',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+    pdf: 'application/pdf', zip: 'application/zip', gz: 'application/gzip', doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    py: 'text/x-python', sh: 'text/x-sh', rs: 'text/x-rust', go: 'text/x-go', java: 'text/x-java',
+    c: 'text/x-c', h: 'text/x-c', cpp: 'text/x-c++', rb: 'text/x-ruby', sql: 'text/x-sql', log: 'text/plain',
+  }
+  return table[ext] ?? 'application/octet-stream'
+}
 const MANAGED_BEGIN = '# === dsh-desktop managed: MCP servers (begin) ==='
 const MANAGED_END = '# === dsh-desktop managed: MCP servers (end) ==='
 
@@ -1586,6 +1826,11 @@ async function restartLoaderEntry(ctx, entryId) {
 }
 
 // — Desktop notification emitter ---------------------------------------------
+/** In-flight native folder-pick requests keyed by request id. */
+const pendingFolderPicks = new Map()
+/** In-flight file-icon requests keyed by request id. */
+const pendingIconRequests = new Map()
+
 // Prints marker lines on the server's stdout; the desktop shell parses them
 // and turns them into macOS notifications + Dock badge updates.
 

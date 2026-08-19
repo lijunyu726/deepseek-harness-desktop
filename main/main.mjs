@@ -155,6 +155,48 @@ function handleDesktopEvent(event) {
     }
     return
   }
+  if (event.kind === 'pick-folder' && typeof event.requestId === 'string') {
+    // Native folder picker for the composer's 上传文件夹 entry. The dsh
+    // host cannot own Electron dialogs; the result travels back into the
+    // page (window.__DSH_PICK_FOLDER_RESULT__) which hands it to the host.
+    void (async () => {
+      const target = win
+      const options = { title: '选择要上传的文件夹', properties: ['openDirectory', 'createDirectory'] }
+      let pickedPath = null
+      try {
+        const picked = target !== null && !target.isDestroyed()
+          ? await dialog.showOpenDialog(target, options)
+          : await dialog.showOpenDialog(options)
+        pickedPath = picked.canceled ? null : (picked.filePaths[0] ?? null)
+      } catch {
+        pickedPath = null
+      }
+      const payload = JSON.stringify({ requestId: event.requestId, path: pickedPath })
+      if (target !== null && !target.isDestroyed()) {
+        void target.webContents.executeJavaScript(`window.__DSH_PICK_FOLDER_RESULT__ && window.__DSH_PICK_FOLDER_RESULT__(${payload})`).catch(() => {})
+      }
+    })()
+    return
+  }
+  if (event.kind === 'file-icon' && typeof event.requestId === 'string' && typeof event.path === 'string') {
+    // macOS file/folder icon for the message attachment cards; the data URL
+    // is injected back into the page and forwarded to the host request.
+    void (async () => {
+      let dataUrl = ''
+      try {
+        const icon = await app.getFileIcon(event.path, { size: 'normal' })
+        if (icon !== null && !icon.isEmpty()) dataUrl = icon.toDataURL()
+      } catch {
+        dataUrl = ''
+      }
+      const payload = JSON.stringify({ requestId: event.requestId, dataUrl })
+      const target = win
+      if (target !== null && !target.isDestroyed()) {
+        void target.webContents.executeJavaScript(`window.__DSH_FILE_ICON_RESULT__ && window.__DSH_FILE_ICON_RESULT__(${payload})`).catch(() => {})
+      }
+    })()
+    return
+  }
   if (desktopConfig.notifications === false) return
   const focused = win !== null && !win.isDestroyed() && win.isFocused()
   if (focused || event.kind !== 'agent-idle' && event.kind !== 'agent-error') return

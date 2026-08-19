@@ -386,6 +386,18 @@ window.__ModuleLoader__.load({
       color: 'inherit', fontSize: '13px', opacity: 0.55, padding: 0,
     }
 
+    /** Invisible session tracker: exposes the current session id for the
+     *  folder-upload flow (window.__dshCurrentSessionId__). */
+    function SessionIdTracker({ sessionId }) {
+      react.useEffect(() => {
+        window.__dshCurrentSessionId__ = typeof sessionId === 'string' ? sessionId : ''
+        return () => {
+          if (window.__dshCurrentSessionId__ === sessionId) window.__dshCurrentSessionId__ = ''
+        }
+      }, [sessionId])
+      return null
+    }
+
     function BalanceChip({ gateway }) {
       const [state, setState] = react.useState({ loading: true, infos: null, error: '' })
       const refresh = () => {
@@ -2516,6 +2528,88 @@ window.__ModuleLoader__.load({
         removeSkill: (name) => connection.rpc.call('/api', 'globalInstructions/removeSkill', { args: { name } }).then(unwrap),
         visionConfig: () => connection.rpc.call('/api', 'globalInstructions/visionConfig', { args: {} }).then(unwrap),
         saveVisionConfig: (input) => connection.rpc.call('/api', 'globalInstructions/saveVisionConfig', { args: { input } }).then(unwrap),
+        saveUploadFile: (input) => connection.rpc.call('/api', 'globalInstructions/saveUploadFile', { args: { input } }).then(unwrap),
+        copyFolderUpload: (input) => connection.rpc.call('/api', 'globalInstructions/copyFolderUpload', { args: { input } }).then(unwrap),
+        pickFolderNative: () => connection.rpc.call('/api', 'globalInstructions/pickFolderNative', { args: {} }).then(unwrap),
+        resolvePickFolder: (input) => connection.rpc.call('/api', 'globalInstructions/resolvePickFolder', { args: { input } }).then(unwrap),
+        getFileIcon: (input) => connection.rpc.call('/api', 'globalInstructions/getFileIcon', { args: { input } }).then(unwrap),
+        resolveFileIcon: (input) => connection.rpc.call('/api', 'globalInstructions/resolveFileIcon', { args: { input } }).then(unwrap),
+      }
+
+      // Binary attachments (paste/drop/menu) get persisted into the owning
+      // session's folder ($DSH_HOME/sessions/<project>/<sessionId>/uploads/)
+      // so they disappear with the session; the conversation serializer calls
+      // this hook before sending. Returns { path, shortPath } or null.
+      window.__DSH_SAVE_UPLOAD__ = async (file, sessionId) => {
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          let binary = ''
+          const CHUNK = 0x8000
+          for (let i = 0; i < bytes.length; i += CHUNK) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+          }
+          const result = await gateway.saveUploadFile({ name: file.name, data: btoa(binary), sessionId: String(sessionId ?? '') })
+          if (result && result.ok === true && typeof result.path === 'string') return { path: result.path, shortPath: result.shortPath ?? result.path }
+          return null
+        } catch {
+          return null
+        }
+      }
+
+      // Native folder-pick answer bridge: the Electron shell injects the
+      // dialog result into the page; forward it to the host pending request.
+      window.__DSH_PICK_FOLDER_RESULT__ = (payload) => {
+        try {
+          void gateway.resolvePickFolder({ requestId: payload?.requestId, path: payload?.path ?? '' })
+        } catch {
+          /* bridge gone: host request times out on its own */
+        }
+      }
+
+      // macOS file/folder icon bridge for message attachment cards, with a
+      // per-path cache and in-flight dedupe (historical messages re-render
+      // often; icons must not refetch every time).
+      window.__DSH_FILE_ICON_RESULT__ = (payload) => {
+        try {
+          void gateway.resolveFileIcon({ requestId: payload?.requestId, dataUrl: payload?.dataUrl ?? '' })
+        } catch {
+          /* bridge gone: host request times out on its own */
+        }
+      }
+      const _fileIconCache = new Map()
+      const _fileIconInFlight = new Map()
+      window.__DSH_GET_FILE_ICON__ = (filePath) => {
+        if (typeof filePath !== 'string' || filePath === '') return Promise.resolve(null)
+        const hit = _fileIconCache.get(filePath)
+        if (hit !== undefined) return Promise.resolve(hit)
+        const flying = _fileIconInFlight.get(filePath)
+        if (flying !== undefined) return flying
+        const pending = gateway.getFileIcon({ path: filePath }).then((r) => {
+          const dataUrl = r && r.ok === true && typeof r.dataUrl === 'string' && r.dataUrl.startsWith('data:image') ? r.dataUrl : null
+          _fileIconCache.set(filePath, dataUrl)
+          _fileIconInFlight.delete(filePath)
+          return dataUrl
+        }).catch(() => {
+          _fileIconCache.set(filePath, null)
+          _fileIconInFlight.delete(filePath)
+          return null
+        })
+        _fileIconInFlight.set(filePath, pending)
+        return pending
+      }
+
+      // Small visible toast for upload errors (the shell has no toast seat
+      // for this plugin, so it renders its own DOM overlay).
+      const _uploadToast = (text) => {
+        const el = document.createElement('div')
+        el.textContent = text
+        el.style.cssText = 'position:fixed;bottom:96px;left:50%;transform:translateX(-50%);background:#2a2f3a;color:#e8eaf0;border:1px solid rgba(140,150,170,0.35);border-radius:10px;padding:10px 18px;font-size:13px;z-index:2147483000;box-shadow:0 8px 28px rgba(0,0,0,0.45);max-width:min(70vw,520px);'
+        document.body.appendChild(el)
+        setTimeout(() => {
+          el.style.transition = 'opacity 0.3s'
+          el.style.opacity = '0'
+          setTimeout(() => el.remove(), 320)
+        }, 3600)
       }
 
       // — 统计行单位文案：tok → token ----------------------------------------
@@ -2599,6 +2693,31 @@ window.__ModuleLoader__.load({
         for (const fn of _editListeners) fn()
       }
 
+      // In-place editor bridges: the conversation's UserMessageNodeView
+      // renders the textarea + 取消/发送 buttons; these handlers execute
+      // the outcome and clear the edit state.
+      window.__dshEditSend__ = (text) => {
+        _setEditSnapshot(null)
+        const value = String(text ?? '').trim()
+        if (value === '') return
+        const ia = window.__dshInputActions
+        if (ia && typeof ia.setDraft === 'function' && typeof ia.submit === 'function') {
+          ia.setDraft(value)
+          focusComposerAtEnd()
+          ia.submit()
+        } else {
+          const textarea = document.querySelector('[data-composer-card] textarea')
+          if (!(textarea instanceof HTMLTextAreaElement)) return
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+          if (nativeSetter) nativeSetter.call(textarea, value)
+          else textarea.value = value
+          textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+      }
+      window.__dshEditCancel__ = () => {
+        _setEditSnapshot(null)
+      }
+
       // Find the last user message key in the chat DOM so we can tell
       // UserMessageNodeView which row should show the edit button.
       function _findLastUserMessageKey() {
@@ -2639,35 +2758,16 @@ window.__ModuleLoader__.load({
           if (key === null) return
           _setEditSnapshot({
             lastUserKey: key,
+            editing: null,
             onEdit: (text) => {
-              // Clear the edit state first
-              _setEditSnapshot(null)
-              // Use the DOM text as fallback; the text param from actions()
-              // callback is the contentParts text which is more accurate.
+              // Switch the row into in-place editing mode; the conversation
+              // package renders the textarea and 取消/发送 buttons.
               const editText = text || _findLastUserMessageText()
-              if (!editText) return
-              // Use inputActions.setDraft if available (preserves React state
-              // invariants), otherwise fall back to DOM native setter.
-              const ia = window.__dshInputActions
-              if (ia && typeof ia.setDraft === 'function') {
-                ia.setDraft(editText)
-                focusComposerAtEnd()
-              } else {
-                const textarea = document.querySelector('[data-composer-card] textarea')
-                if (!(textarea instanceof HTMLTextAreaElement)) return
-                const nativeSetter = Object.getOwnPropertyDescriptor(
-                  HTMLTextAreaElement.prototype, 'value'
-                )?.set
-                if (nativeSetter) {
-                  nativeSetter.call(textarea, editText)
-                } else {
-                  textarea.value = editText
-                }
-                textarea.dispatchEvent(new Event('input', { bubbles: true }))
-                textarea.focus({ preventScroll: true })
-                const end = textarea.value.length
-                textarea.setSelectionRange(end, end)
-              }
+              _setEditSnapshot({
+                lastUserKey: key,
+                editing: { key, initialText: editText },
+                onEdit: null,
+              })
             },
           })
           // Auto-clear edit state when the agent starts running again.
@@ -2688,6 +2788,8 @@ window.__ModuleLoader__.load({
           document.removeEventListener('keydown', _onEscKeydown, { capture: true })
           _setEditSnapshot(null)
           delete window.__dshEditStore
+          delete window.__dshEditSend__
+          delete window.__dshEditCancel__
         }
       }, 'dsh-desktop: esc-cancel-edit')
 
@@ -2791,6 +2893,18 @@ window.__ModuleLoader__.load({
           BalanceChip,
         ),
       )
+      // Invisible current-session tracker for folder upload (renders null).
+      ctx.slots.inject('conversation.session.header.utilities', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.session.header.utilities',
+            id: 'session-id-tracker',
+            order: -100,
+            inject: () => ({}),
+          },
+          SessionIdTracker,
+        ),
+      )
       // 历史 Prompt 时间轴：一条 prompt 一根小杠，悬停预览、点击填入。
       // Rendered as a fixed rail pinned to the conversation pane's left gutter
       // (Codex-style); the header slot is only the in-session anchor that
@@ -2834,6 +2948,7 @@ window.__ModuleLoader__.load({
         ),
       )
 
+
       // --- File / folder upload: inject into the "+" command menu ---
       // The command menu has class _3e4SsG_menu (from dsh-client-ui-input-trigger).
       // Watch for it to appear and inject upload items at the top of its viewport.
@@ -2841,88 +2956,159 @@ window.__ModuleLoader__.load({
       _fileInput.type = 'file'
       _fileInput.multiple = true
       _fileInput.style.display = 'none'
-      const _folderInput = document.createElement('input')
-      _folderInput.type = 'file'
-      _folderInput.webkitdirectory = ''
-      _folderInput.style.display = 'none'
       document.body.appendChild(_fileInput)
-      document.body.appendChild(_folderInput)
+
+      function _deliverFiles(files) {
+        if (typeof window.__DSH_ADD_FILES__ === 'function') {
+          window.__DSH_ADD_FILES__(files)
+          return true
+        }
+        return false
+      }
 
       function _triggerFileInput(input) {
         input.onchange = () => {
           if (!input.files || input.files.length === 0) return
-          const dt = new DataTransfer()
-          Array.from(input.files).forEach((f) => dt.items.add(f))
-          const imgInput = document.querySelector('input[type="file"][accept*="image"]')
-          if (imgInput) {
-            const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files').set
-            nativeSet.call(imgInput, dt.files)
-            imgInput.dispatchEvent(new Event('change', { bubbles: true }))
+          const files = Array.from(input.files)
+          if (_deliverFiles(files)) {
+            input.value = ''
+            return
           }
-          input.value = ''
+          // The composer may still be mounting: retry for up to ~5s.
+          let attempts = 0
+          const timer = setInterval(() => {
+            attempts += 1
+            if (_deliverFiles(files) || attempts > 20) {
+              clearInterval(timer)
+              input.value = ''
+            }
+          }, 250)
         }
         input.click()
       }
 
-      const _MENU_CLASS = '_3e4SsG_menu'
-      const _VIEWPORT_CLASS = '_3e4SsG_viewport'
-      const _ITEM_CLASS = '_3e4SsG_item'
-      const _ITEM_NAME_CLASS = '_3e4SsG_itemName'
-      const _ITEM_ICON_CLASS = '_3e4SsG_itemIcon'
+      // Folder upload: Electron main-process native dialog (no TCC
+      // automation permission needed); the host copies the WHOLE folder into
+      // the session's uploads directory and the composer receives one
+      // folder-attachment placeholder File carrying the saved path.
+      function _triggerFolderUpload() {
+        void (async () => {
+          try {
+            const picked = await gateway.pickFolderNative()
+            if (!picked || picked.ok !== true) {
+              _uploadToast(`文件夹选择失败：${String(picked?.error ?? '未知错误')}`)
+              return
+            }
+            const dir = picked.path
+            if (typeof dir !== 'string' || dir === '') return // 用户取消
+            const sessionId = String(window.__dshCurrentSessionId__ ?? '')
+            const result = await gateway.copyFolderUpload({ path: dir, sessionId })
+            if (!result || result.ok !== true) {
+              _uploadToast(`上传文件夹失败：${String(result?.error ?? '未知错误')}`)
+              return
+            }
+            if ((result.files ?? 0) === 0) {
+              _uploadToast('该文件夹没有可上传的文件')
+              return
+            }
+            const folderFile = new File([''], result.name || 'folder', { type: 'application/x-directory' })
+            try {
+              Object.defineProperty(folderFile, '__dshFolderPath', { value: result.path, writable: false })
+              Object.defineProperty(folderFile, '__dshFolderShortPath', { value: result.shortPath ?? result.path, writable: false })
+              Object.defineProperty(folderFile, '__dshFolderStats', { value: { files: result.files ?? 0, totalBytes: result.totalBytes ?? 0 }, writable: false })
+            } catch {
+              /* properties already set: placeholder unusable */
+            }
+            if (!_deliverFiles([folderFile])) {
+              let attempts = 0
+              const timer = setInterval(() => {
+                attempts += 1
+                if (_deliverFiles([folderFile]) || attempts > 20) clearInterval(timer)
+              }, 250)
+            } else if (result.truncated) {
+              _uploadToast('文件夹较大，仅复制了部分内容（上限 2000 个文件 / 总计 200MB）')
+            }
+          } catch (err) {
+            _uploadToast(`文件夹上传失败：${String(err?.message ?? err)}`)
+          }
+        })()
+      }
 
-      function _injectUploadItems(menu) {
-        if (menu.querySelector('[data-dsh-upload-item]')) return
-        const viewport = menu.querySelector(`.${_VIEWPORT_CLASS}`) || menu
-        const sampleItem = menu.querySelector(`.${_ITEM_CLASS}`)
-        const itemStyle = sampleItem ? sampleItem.getAttribute('style') || '' : ''
+      // — Upload-only "+" menu -------------------------------------------------
+      // Reuses the shell's menu visual classes so it looks native, but shows
+      // only 上传文件 / 上传文件夹 (no command category — those stay under "/").
+      let _uploadMenuEl = null
+      const _closeUploadMenu = () => {
+        if (_uploadMenuEl === null) return
+        _uploadMenuEl.remove()
+        _uploadMenuEl = null
+        document.removeEventListener('pointerdown', _onUploadMenuPointerDown, true)
+        document.removeEventListener('keydown', _onUploadMenuKeydown, true)
+      }
+      const _onUploadMenuPointerDown = (ev) => {
+        if (!(ev.target instanceof Node)) return
+        if (_uploadMenuEl?.contains(ev.target)) return
+        _closeUploadMenu()
+      }
+      const _onUploadMenuKeydown = (ev) => {
+        if (ev.key === 'Escape') _closeUploadMenu()
+      }
 
-        const fileIcon = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 1v9M3.5 6.5L7 10l3.5-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10.5v1.5h10v-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        const folderIcon = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M1.5 3.5h4l1.5 2h5.5v7h-11z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 8v3M6.5 9.5H3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      const _UPLOAD_FILE_ICON = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 1v9M3.5 6.5L7 10l3.5-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10.5v1.5h10v-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      const _UPLOAD_FOLDER_ICON = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M1.5 3.5h4l1.5 2h5.5v7h-11z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 8v3M6.5 9.5H3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+      function _openUploadMenu() {
+        if (_uploadMenuEl !== null) {
+          _closeUploadMenu()
+          return
+        }
+        const anchor = document.querySelector('button[aria-label="命令"], button[aria-label="Commands"]')
+        if (!(anchor instanceof HTMLElement)) return
+        const rect = anchor.getBoundingClientRect()
+        const menu = document.createElement('div')
+        menu.className = '_3e4SsG_menu'
+        menu.setAttribute('role', 'listbox')
+        menu.setAttribute('aria-label', '上传')
+        menu.style.position = 'fixed'
+        menu.style.left = `${Math.round(rect.left)}px`
+        menu.style.bottom = `${Math.round(window.innerHeight - rect.top + 4)}px`
+        menu.style.zIndex = '1000'
 
         const makeItem = (label, iconSvg, onClick) => {
           const btn = document.createElement('button')
-          btn.setAttribute('data-dsh-upload-item', 'true')
           btn.type = 'button'
-          btn.className = _ITEM_CLASS
+          btn.className = '_3e4SsG_item'
           btn.setAttribute('role', 'option')
-          // Copy styles from existing menu items
-          if (sampleItem) {
-            const cs = getComputedStyle(sampleItem)
-            btn.style.cssText = Array.from(cs).filter(p => !p.startsWith('-')).map(p => `${p}:${cs.getPropertyValue(p)}`).join(';')
-          }
-          btn.innerHTML = `<span class="${_ITEM_ICON_CLASS}" aria-hidden="true">${iconSvg}</span><span class="${_ITEM_NAME_CLASS}">${label}</span>`
+          btn.innerHTML = `<span class="_3e4SsG_itemIcon" aria-hidden="true">${iconSvg}</span><span class="_3e4SsG_itemName">${label}</span>`
           btn.addEventListener('mousedown', (e) => {
             e.preventDefault()
             e.stopPropagation()
+          })
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation()
+            _closeUploadMenu()
             onClick()
           })
-          btn.onmouseenter = () => btn.style.background = 'rgba(128,140,160,0.16)'
-          btn.onmouseleave = () => btn.style.background = 'transparent'
           return btn
         }
-
-        const sep = document.createElement('div')
-        sep.setAttribute('data-dsh-upload-item', 'separator')
-        sep.style.cssText = 'height:1px;background:rgba(128,140,160,0.16);margin:4px 12px;'
-
-        const firstChild = viewport.firstChild
-        viewport.insertBefore(makeItem('上传文件', fileIcon, () => _triggerFileInput(_fileInput)), firstChild)
-        viewport.insertBefore(makeItem('上传文件夹', folderIcon, () => _triggerFileInput(_folderInput)), firstChild)
-        viewport.insertBefore(sep, firstChild)
+        menu.appendChild(makeItem('上传文件', _UPLOAD_FILE_ICON, () => _triggerFileInput(_fileInput)))
+        menu.appendChild(makeItem('上传文件夹', _UPLOAD_FOLDER_ICON, () => _triggerFolderUpload()))
+        document.body.appendChild(menu)
+        _uploadMenuEl = menu
+        document.addEventListener('pointerdown', _onUploadMenuPointerDown, true)
+        document.addEventListener('keydown', _onUploadMenuKeydown, true)
       }
-
-      const _menuObserver = new MutationObserver((mutations) => {
-        for (const m of mutations) {
-          for (const node of m.addedNodes) {
-            if (!(node instanceof HTMLElement)) continue
-            const menu = node.classList?.contains(_MENU_CLASS)
-              ? node
-              : node.querySelector?.(`.${_MENU_CLASS}`)
-            if (menu) _injectUploadItems(menu)
-          }
+      // The composer "+" button prefers this bridge over the command menu.
+      window.__DSH_OPEN_UPLOAD_MENU__ = _openUploadMenu
+      ctx.effect(() => {
+        return () => {
+          _closeUploadMenu()
+          if (window.__DSH_OPEN_UPLOAD_MENU__ === _openUploadMenu) delete window.__DSH_OPEN_UPLOAD_MENU__
+          delete window.__DSH_PICK_FOLDER_RESULT__
+          delete window.__DSH_FILE_ICON_RESULT__
+          delete window.__DSH_GET_FILE_ICON__
         }
-      })
-      _menuObserver.observe(document.body, { childList: true, subtree: true })
+      }, 'dsh-desktop: upload-only plus menu')
     }
 
     exports.apply = apply

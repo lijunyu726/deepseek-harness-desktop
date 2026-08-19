@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "1.2.35",
+  "version": "1.3.0",
   "private": true,
   "description": "DeepSeek Harness desktop shell for macOS (Electron wrapper around the dsh web server)",
   "author": "DeepSeek",
@@ -13,14 +13,16 @@
     "benchmark:bash": "node scripts/benchmark-persistent-bash.mjs",
     "vision:prepare": "node scripts/apply-vision-bridge.mjs",
     "vision:check": "node scripts/apply-vision-bridge.mjs --check && node --check node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js",
+    "upload:prepare": "node scripts/apply-upload-enhancements.mjs",
+    "upload:check": "node scripts/apply-upload-enhancements.mjs --check",
     "pack:plugin": "node scripts/pack-plugin.mjs",
     "sanitize:runtime": "node scripts/sanitize-runtime-build-paths.mjs",
     "audit:release": "node scripts/audit-release.mjs",
-    "start": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && electron .",
-    "dev": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && electron .",
+    "start": "npm run bash:prepare && npm run vision:prepare && npm run upload:prepare && npm run pack:plugin && electron .",
+    "dev": "npm run bash:prepare && npm run vision:prepare && npm run upload:prepare && npm run pack:plugin && electron .",
     "icon": "node scripts/build-icon.mjs",
-    "dist": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && npm run sanitize:runtime && node scripts/build-icon.mjs && electron-builder --mac && npm run audit:release",
-    "dist:dir": "npm run bash:prepare && npm run vision:prepare && npm run pack:plugin && npm run sanitize:runtime && node scripts/build-icon.mjs && electron-builder --dir && npm run audit:release",
+    "dist": "npm run bash:prepare && npm run vision:prepare && npm run upload:prepare && npm run pack:plugin && npm run sanitize:runtime && node scripts/build-icon.mjs && electron-builder --mac && npm run audit:release",
+    "dist:dir": "npm run bash:prepare && npm run vision:prepare && npm run upload:prepare && npm run pack:plugin && npm run sanitize:runtime && node scripts/build-icon.mjs && electron-builder --dir && npm run audit:release",
     "ensure:peers": "node scripts/ensure-peer-deps.mjs"
   },
   "dependencies": {
