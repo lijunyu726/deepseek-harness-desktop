@@ -1527,7 +1527,7 @@ window.__ModuleLoader__.load({
         const cardRect = composer.getBoundingClientRect()
         if (cardRect.width === 0) return
         let el = composer.parentElement
-        let rect = null
+        let paneRect = null
         while (el) {
           const r = el.getBoundingClientRect()
           // The pane column is the TOP-ANCHORED wide ancestor: the composer
@@ -1536,22 +1536,35 @@ window.__ModuleLoader__.load({
           // first match with top ≈ 0 is the pane (header hidden: scroll
           // body at 0; header visible: the root at 0).
           if (r.width > cardRect.width + 300 && r.left > 0 && r.top <= 4) {
-            rect = r
+            paneRect = r
             break
           }
           el = el.parentElement
         }
-        if (rect === null) return
-        setPos({ left: rect.left + rect.width / 2, top: rect.top + 12 })
+        if (paneRect === null) return
+        // Vertical seat: the CENTER of the visible header (title row + tab
+        // row). When the header is hidden (blank new session) fall back to
+        // the title-row seat at the pane top.
+        const headerEl = document.querySelector('.wSkVaW_header')
+        const hr = headerEl === null ? null : headerEl.getBoundingClientRect()
+        const headerVisible = headerEl !== null && hr !== null && hr.height > 0 && getComputedStyle(headerEl).display !== 'none'
+        const top = headerVisible ? hr.top + hr.height / 2 - 16 : paneRect.top + 12
+        setPos({ left: paneRect.left + paneRect.width / 2, top })
       }, [])
       react.useEffect(() => {
         place()
         window.addEventListener('resize', place)
         const observer = new ResizeObserver(() => place())
         observer.observe(document.body)
+        // The header appears/disappears inside one session (blank → first
+        // message): re-seat the chip when its visibility class flips.
+        const headerEl = document.querySelector('.wSkVaW_header')
+        const classObs = headerEl === null ? null : new MutationObserver(() => place())
+        if (classObs !== null) classObs.observe(headerEl, { attributes: true, attributeFilter: ['class'] })
         return () => {
           window.removeEventListener('resize', place)
           observer.disconnect()
+          if (classObs !== null) classObs.disconnect()
         }
       }, [place])
       const peak = pricePhase(now) === 'peak'
