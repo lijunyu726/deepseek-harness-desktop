@@ -1497,7 +1497,9 @@ window.__ModuleLoader__.load({
     const PEAK_WINDOWS_MIN = [[9 * 60, 12 * 60], [14 * 60, 18 * 60]]
 
     function beijingClock(now) {
-      const shifted = new Date(now.getTime() + 8 * 3600 * 1000)
+      // `now` is a Date.now() timestamp (number), not a Date instance.
+      const t = typeof now === 'number' ? now : now.getTime()
+      const shifted = new Date(t + 8 * 3600 * 1000)
       return { hours: shifted.getUTCHours(), minutes: shifted.getUTCMinutes() }
     }
 
@@ -1528,7 +1530,12 @@ window.__ModuleLoader__.load({
         let rect = null
         while (el) {
           const r = el.getBoundingClientRect()
-          if (r.width > cardRect.width + 300 && r.left > 0) {
+          // The pane column is the TOP-ANCHORED wide ancestor: the composer
+          // seat is also wide but sits at the bottom (top > 0), and the
+          // header, when visible, starts above the scroll body — so the
+          // first match with top ≈ 0 is the pane (header hidden: scroll
+          // body at 0; header visible: the root at 0).
+          if (r.width > cardRect.width + 300 && r.left > 0 && r.top <= 4) {
             rect = r
             break
           }
