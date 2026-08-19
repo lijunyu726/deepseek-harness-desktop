@@ -41,7 +41,7 @@ node_modules/          安装产物——绝不提交
 
 ## 发布纪律（每次功能改动完成后必须执行，用户明确要求）
 
-- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。
+- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号默认按**补丁位**递增（如 `1.3.0 → 1.3.1`），只有用户明确要求时才用次版本位（`1.4.0`）。
 - 打包与审计通过后，**必须**把全部源码改动（`patches/`、`packages/`、`scripts/`、`main/`、`assets/`、文档、版本号）提交并推送 GitHub（`origin/main`）。`release/` 与 `node_modules/` 永不提交；若用户需要安装包进 GitHub，走 GitHub Release 挂附件。
 
 ## 关键实现约束（改代码前必读）

@@ -60,7 +60,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 - **主进程（main/main.mjs）**：`pick-folder` 与 `file-icon` 两种 desktop-event 处理（dialog.showOpenDialog / app.getFileIcon → `executeJavaScript` 回注）。
 - **生命周期**：附件字节在会话目录内，删除会话由 `dsh-session-persistence-jsonl` 递归删目录（既有行为）；归档保留；file 块随会话日志持久化，历史回放保留卡片。
 
-## 工作区删除与高峰时段提示（v1.4.0）
+## 工作区删除与高峰时段提示（v1.3.1）
 
 - **工作区删除连带删除会话**：宿主 `workspace.delete` 删除注册前捕获 `workspace.sessionIds`，逐个执行与单会话删除相同的 teardown；单会话失败只告警不回滚。`origin === "subagent"` 的会话跳过（随父会话 teardown 清理，且从不作为顶层行渲染，不会落入 Ungrouped）。客户端删除后刷新会话基线，冷会话（无 live 帧）立即从列表消失。
 - **归档管理删除**：插件宿主新增 `deleteSessions` remote（批量、每步超时兜底）；客户端多选 + 行内二次确认 + 15s 总超时兜底。
