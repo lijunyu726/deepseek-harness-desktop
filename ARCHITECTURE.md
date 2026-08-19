@@ -60,11 +60,11 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 - **主进程（main/main.mjs）**：`pick-folder` 与 `file-icon` 两种 desktop-event 处理（dialog.showOpenDialog / app.getFileIcon → `executeJavaScript` 回注）。
 - **生命周期**：附件字节在会话目录内，删除会话由 `dsh-session-persistence-jsonl` 递归删目录（既有行为）；归档保留；file 块随会话日志持久化，历史回放保留卡片。
 
-## 工作区删除与高峰时段提示（v1.3.1 / v1.3.2）
+## 工作区删除与高峰时段提示（v1.3.1 / v1.3.2 / v1.3.3）
 
 - **工作区删除连带删除会话**：宿主 `workspace.delete` 删除注册前捕获 `workspace.sessionIds`，逐个执行与单会话删除相同的 teardown；单会话失败只告警不回滚。`origin === "subagent"` 的会话跳过（随父会话 teardown 清理，且从不作为顶层行渲染，不会落入 Ungrouped）。客户端删除后刷新会话基线，冷会话（无 live 帧）立即从列表消失。
 - **归档管理删除**：插件宿主新增 `deleteSessions` remote（批量、每步超时兜底）；客户端多选 + 行内二次确认 + 15s 总超时兜底。
-- **高峰/空闲时段提示**：纯客户端组件 `PriceHoursHint`，浏览器时钟按 UTC+8 换算北京时间（无夏令时），9:00–12:00 / 14:00–18:00 判为高峰，其余空闲（价格为高峰一半）；30 秒刷新。v1.3.2 起挂载点从 `conversation.composer.dock` 移到 `conversation.session.header.utilities`，组件绝对定位在会话页顶部栏中央（header 是唯一 positioned 祖先，`left:50% + translateX(-50%)`，与 32px 标题行垂直对齐）。
+- **高峰/非高峰时段提示**：纯客户端组件 `PriceHoursHint`，浏览器时钟按 UTC+8 换算北京时间（无夏令时），9:00–12:00 / 14:00–18:00 判为高峰，其余为非高峰（价格为高峰一半）；30 秒刷新，仅两个标签。v1.3.3 起挂载在 `conversation.input.dock`（任何活跃会话都渲染，包括 header 被隐藏的 blank 新会话），组件测量会话面板矩形后用 `position:fixed` 钉在顶部栏（wSkVaW_header 标题行）中央，不依赖 header 可见性；此前依次用过的 composer.dock / header.utilities 挂载均已弃用。
 - **历史 Prompt 按会话隔离（v1.3.2）**：宿主记录每条 prompt 时携带 `String(agent.id)` 会话归属；`promptHistory(limit, sessionId)` remote 按会话过滤；客户端 `PromptHistoryRail` 从槽位 standard kit 解构 `sessionId` 并随会话切换重载。外观不变，仅数据范围收敛到当前会话。
 
 ## 数据与凭据流

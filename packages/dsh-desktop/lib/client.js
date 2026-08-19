@@ -1509,29 +1509,62 @@ window.__ModuleLoader__.load({
 
     function PriceHoursHint() {
       const [now, setNow] = react.useState(() => Date.now())
+      const [pos, setPos] = react.useState(null)
       react.useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 30 * 1000)
         return () => window.clearInterval(timer)
       }, [])
+      // Pin the chip to the middle of the conversation pane's top bar (the
+      // wSkVaW_header title row). Measured from the composer card's wide
+      // ancestor so it works even when the header chrome itself is hidden
+      // (blank new session): fixed coords = pane center, 12px below the pane
+      // top, the same visual seat the header title row occupies.
+      const place = react.useCallback(() => {
+        const composer = document.querySelector('[data-composer-card]')
+        if (!(composer instanceof HTMLElement)) return
+        const cardRect = composer.getBoundingClientRect()
+        if (cardRect.width === 0) return
+        let el = composer.parentElement
+        let rect = null
+        while (el) {
+          const r = el.getBoundingClientRect()
+          if (r.width > cardRect.width + 300 && r.left > 0) {
+            rect = r
+            break
+          }
+          el = el.parentElement
+        }
+        if (rect === null) return
+        setPos({ left: rect.left + rect.width / 2, top: rect.top + 12 })
+      }, [])
+      react.useEffect(() => {
+        place()
+        window.addEventListener('resize', place)
+        const observer = new ResizeObserver(() => place())
+        observer.observe(document.body)
+        return () => {
+          window.removeEventListener('resize', place)
+          observer.disconnect()
+        }
+      }, [place])
       const peak = pricePhase(now) === 'peak'
       const { hours, minutes } = beijingClock(now)
       const hh = String(hours).padStart(2, '0')
       const mm = String(minutes).padStart(2, '0')
       const title = peak
-        ? `高峰时段（北京时间 9:00–12:00 / 14:00–18:00）· 按标准价格计费。空闲时段价格为高峰时段的一半。当前北京时间 ${hh}:${mm}。`
-        : `空闲时段 · 价格为高峰时段的一半（5 折）。高峰时段为北京时间 9:00–12:00 / 14:00–18:00。当前北京时间 ${hh}:${mm}。`
+        ? `高峰时段（北京时间 9:00–12:00 / 14:00–18:00）· 按标准价格计费。非高峰时段价格为高峰时段的一半。当前北京时间 ${hh}:${mm}。`
+        : `非高峰时段 · 价格为高峰时段的一半（5 折）。高峰时段为北京时间 9:00–12:00 / 14:00–18:00。当前北京时间 ${hh}:${mm}。`
       return react.createElement(
         'span',
         {
           style: {
-            // Absolutely centered against the session header (its only
-            // positioned ancestor): sits in the middle of the top bar,
-            // vertically aligned with the 32px title row.
-            position: 'absolute',
-            left: '50%',
-            top: '12px',
-            height: '32px',
+            position: 'fixed',
+            left: pos === null ? 0 : pos.left,
+            top: pos === null ? 0 : pos.top,
             transform: 'translateX(-50%)',
+            visibility: pos === null ? 'hidden' : 'visible',
+            zIndex: 5,
+            height: '32px',
             display: 'inline-flex',
             alignItems: 'center',
             gap: '5px',
@@ -1551,7 +1584,7 @@ window.__ModuleLoader__.load({
         react.createElement('span', {
           style: { width: 6, height: 6, borderRadius: 999, background: peak ? WARN : OK, flex: 'none' },
         }),
-        peak ? `高峰时段 · 标准价 · BJ ${hh}:${mm}` : `空闲时段 · 半价 · BJ ${hh}:${mm}`,
+        peak ? '高峰时段' : '非高峰时段',
       )
     }
 
@@ -3123,14 +3156,15 @@ window.__ModuleLoader__.load({
           StatsStyleChip,
         ),
       )
-      // 高峰 / 空闲时段提示：绝对定位在会话页顶部栏中央（标题与右侧按钮之间），
-      // 高峰与空闲各有提示；header 槽位只是挂载锚点。
-      ctx.slots.inject('conversation.session.header.utilities', () =>
+      // 高峰 / 非高峰时段提示：固定定位在会话页顶部栏（wSkVaW_header）中央。
+      // 挂载在 input.dock —— 任何活跃会话都渲染（包括 header 被隐藏的 blank
+      // 新会话），组件自行测量会话面板矩形后用 fixed 坐标钉在标题行位置。
+      ctx.slots.inject('conversation.input.dock', () =>
         ctx.slots.register(
           {
-            name: 'conversation.session.header.utilities',
+            name: 'conversation.input.dock',
             id: 'price-hours',
-            order: 80,
+            order: 90,
           },
           PriceHoursHint,
         ),
