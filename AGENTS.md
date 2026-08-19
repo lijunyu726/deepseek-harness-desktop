@@ -39,6 +39,11 @@ node_modules/          安装产物——绝不提交
 
 `npm start` / `npm run dev` 会自动跑 1+2+3+4。
 
+## 发布纪律（每次功能改动完成后必须执行，用户明确要求）
+
+- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。
+- 打包与审计通过后，**必须**把全部源码改动（`patches/`、`packages/`、`scripts/`、`main/`、`assets/`、文档、版本号）提交并推送 GitHub（`origin/main`）。`release/` 与 `node_modules/` 永不提交；若用户需要安装包进 GitHub，走 GitHub Release 挂附件。
+
 ## 关键实现约束（改代码前必读）
 
 - **上传增强 = 整文件补丁，不许改成字符串手术**：四个上游包（conversation/apiproxy/workspace 客户端/web-frontend）的增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 覆盖（原文件留 `.upstream-backup`）。改动流程：改已装应用内文件 → 验证 → 复制回 `patches/` 或 `packages/dsh-desktop/lib/` → `npm run upload:prepare && npm run pack:plugin` 再构建。
