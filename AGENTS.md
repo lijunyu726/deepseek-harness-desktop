@@ -18,7 +18,8 @@ assets/                随应用打包的静态资源（desktop.patch.yml、usag
 packages/dsh-desktop/  双面 Cordis 插件（lib/index.js = 主机端，lib/client.js = 浏览器端，
                        lib/mobile.js = 手机布局引导层，lib/whale-sprites/ = 六档鲸鱼图集；
                        打包成 tgz 再装入 node_modules）
-scripts/               构建链：apply-vision-bridge.mjs、apply-upload-enhancements.mjs、
+scripts/               构建链：apply-session-registry-remove-fix.mjs、
+                       apply-vision-bridge.mjs、apply-upload-enhancements.mjs、
                        pack-plugin.mjs、ensure-peer-deps.mjs、sync-monorepo-overrides.mjs、build-icon.mjs
 patches/               上游包整文件补丁（conversation/apiproxy/workspace 客户端/web-frontend
                        增强版，由 apply-upload-enhancements.mjs 覆盖进 node_modules）
@@ -29,19 +30,20 @@ node_modules/          安装产物——绝不提交
 ## 构建链（顺序不可乱）
 
 0. **（仅新克隆/重装依赖后）fork 覆盖层**：本项目消费 npm 发布的 rc.6 依赖，但本地 fork 的会话删除等特性需要从 DSH 大仓覆盖运行时文件。克隆后先 `npm install`，再（如大仓可用）构建大仓并执行 `DSH_MONOREPO=<大仓路径> npm run sync:monorepo`；没有大仓时应用仍可构建运行，只是缺 fork 特性。已迁移的本机 node_modules 已含覆盖层，日常构建跳过此步。
-1. `npm run bash:prepare` —— 将官方 rc.7 的 persistent Bash 快速结算修复精确回植到当前 rc.6 两个运行时文件（可重建、拒绝未知结构）；
-2. `npm run vision:prepare` —— 给 rc.6 依赖打视觉桥补丁（可重建、拒绝未知版本）；
-3. `npm run upload:prepare` —— 把 `patches/` 里的增强完整文件覆盖到四个上游包（conversation/apiproxy/workspace 客户端/web-frontend bundle），原文件留 `.upstream-backup`，幂等 + 语法预检（`--check` 模式可验证是否已打上）；
-4. `npm run pack:plugin` —— 先对 `packages/dsh-desktop/lib/*.js` 执行强制语法预检，再把插件打进 tgz 并刷新 `node_modules/@deepseek-ai/dsh-desktop`（**改插件代码后必须重跑**，否则应用里跑的是旧包）；
-5. `npm run sanitize:runtime` —— 清理 DeepSeek 运行时 bundle 注释中的构建机绝对路径，并拒绝残留当前 HOME/项目根路径；
-6. `node scripts/ensure-peer-deps.mjs` —— 把全部 peer 依赖钉进 `package.json`（electron-builder 会裁掉 peer 依赖，漏掉会导致别的电脑启动即崩）；
-7. `npm run dist` —— 以运行时文件白名单打 arm64 DMG+zip，并自动运行 `audit:release`；审计未通过的产物不得上传（未签名，首次打开用右键→打开）。
+1. `npm run registry:prepare` —— 给 rc.6 的 `dsh-agent` / `dsh-session` 两套运行 bundle 与声明补上 `remove(id)` 强制清注册表能力，并执行行为测试；这是删除会话不产生幽灵行的最后保证，补丁可重建、拒绝未知版本/结构；
+2. `npm run bash:prepare` —— 将官方 rc.7 的 persistent Bash 快速结算修复精确回植到当前 rc.6 两个运行时文件（可重建、拒绝未知结构）；
+3. `npm run vision:prepare` —— 给 rc.6 依赖打视觉桥补丁（可重建、拒绝未知版本）；
+4. `npm run upload:prepare` —— 把 `patches/` 里的增强完整文件覆盖到四个上游包（conversation/apiproxy/workspace 客户端/web-frontend bundle），原文件留 `.upstream-backup`，幂等 + 语法预检（`--check` 模式可验证是否已打上）；
+5. `npm run pack:plugin` —— 先对 `packages/dsh-desktop/lib/*.js` 执行强制语法预检，再把插件打进 tgz 并刷新 `node_modules/@deepseek-ai/dsh-desktop`（**改插件代码后必须重跑**，否则应用里跑的是旧包）；
+6. `npm run sanitize:runtime` —— 清理 DeepSeek 运行时 bundle 注释中的构建机绝对路径，并拒绝残留当前 HOME/项目根路径；
+7. `node scripts/ensure-peer-deps.mjs` —— 把全部 peer 依赖钉进 `package.json`（electron-builder 会裁掉 peer 依赖，漏掉会导致别的电脑启动即崩）；
+8. `npm run dist` —— 以运行时文件白名单打 arm64 DMG+zip，并自动运行 `audit:release`；审计未通过的产物不得上传（未签名，首次打开用右键→打开）。
 
-`npm start` / `npm run dev` 会自动跑 1+2+3+4。
+`npm start` / `npm run dev` 会自动跑 1+2+3+4+5。
 
 ## 发布纪律（每次功能改动完成后必须执行，用户明确要求）
 
-- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号默认按**补丁位**递增（如 `1.3.0 → 1.3.1`），只有用户明确要求时才用次版本位（`1.4.0`）。
+- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号必须高于 Git 历史和 Releases 中出现过的全部正式版本，严禁回退；当前恢复后的基线是 `1.4.1`，默认下一版按补丁位递增为 `1.4.2`。
 - 打包与审计通过后，**必须**把全部源码改动（`patches/`、`packages/`、`scripts/`、`main/`、`assets/`、文档、版本号）提交并推送 GitHub（`origin/main`）。`release/` 与 `node_modules/` 永不提交；若用户需要安装包进 GitHub，走 GitHub Release 挂附件。
 
 ## 关键实现约束（改代码前必读）
@@ -51,6 +53,7 @@ node_modules/          安装产物——绝不提交
 - **图标链路走主进程桥**：文件图标经 Host stdout `[desktop-event] {kind:'file-icon'}` → 主进程 `app.getFileIcon` → `executeJavaScript` 回注 → 页面转发 `resolveFileIcon`；与 `pick-folder` 原生目录选择器同一条双跳桥模式。页面侧必须按路径缓存 + in-flight 去重。
 - **zstd 解码必须留在子进程**：Electron 内置 Node 的 zstd 原生解码（同步/异步/流式）都会随机 SIGTRAP，任何「进程内解压」都是回归。用量扫描全部在 `assets/usage-scan.mjs` 子进程里，失败只丢刷新、不杀服务。
 - **Persistent Bash 修复必须覆盖协议两侧**：当前 rc.6 通过 `scripts/apply-persistent-bash-fix.mjs` 精确回植官方 `a8dc6f9`；不得按网帖只把 `CONTROLLED_PROMPT` 改成工具私有提示符。终端后端必须在 `PROMPT_COMMAND` 中重新设定受控 `PS1`，持久工具必须只执行 `stty -echo` 并以 `waitReason === "stdin_read"` 处理无结束标记回退。
+- **会话删除强制移除必须成为可重建补丁**：ApiProxy teardown 的 `ctx.agents.remove?.(sessionId)` / `ctx.sessions.remove?.(sessionId)` 只有在 rc.6 两个注册表真实提供 `remove(id)` 时才有效；不得再只把这两个方法手工复制进 `/Applications`。`apply-session-registry-remove-fix.mjs` 必须同时覆盖 `dsh-agent` 与 `dsh-session` 的 `lib/index.js`、`lib/types/index.js`、`lib/types/index.d.ts`，并由 `check-session-registry-remove-fix.mjs` 对正常移除、announcing/appending 延迟分支和 ApiProxy 接线做行为检查。
 - **日志扫描是增量且不阻塞面板的**：会话日志是只追加的 zstd 帧流；扫描结果（mtime/size/frameEnd/按日用量）持久化在 `$DSH_HOME/desktop/usage-scan-cache.json`。用量 RPC 必须先返回缓存，再后台启动单飞增量扫描；不得重新让客户端等待 zstd 子进程。
 - **历史 Prompt 只在接受边界记录，且必须按会话归属**：仅从根 agent 的 `agent/pre-step` claimed batch 记录 `source.kind === 'user'` 的文字，不监听 DOM 猜测发送、不记录草稿/系统注入/工具消息。每条记录必须携带 `sessionId`（`String(agent.id)`）；历史只能写入 `$DSH_HOME/desktop/prompt-history.json`，上限 100 条、单条 64 KiB、权限 600；`promptHistory` remote 必须按 sessionId 过滤，时间轴只显示当前会话。恢复草稿必须走 `inputActions.setDraft()`。
 - **被中断 Prompt 的编辑必须走正式输入状态机**：ESC 停止生成后，只允许最后一条有文字的用户消息显示编辑入口；消息正文从该行 durable content 的 `contentParts()` 提取，不得引用 `actions(text)` 回调之外的 `text`。原位编辑器必须支持 Enter 重发、Shift+Enter 换行、Esc 取消；重发走当前会话 `inputActions.setDraft()` → `inputActions.submit()`，提交交接成功后才清编辑态。改动后运行 `npm run edit:check -- --installed`。
@@ -65,7 +68,7 @@ node_modules/          安装产物——绝不提交
 ## 验证方式
 
 - 语法：`node --check packages/dsh-desktop/lib/*.js assets/*.mjs scripts/*.mjs`；
-- 依赖补丁：`npm run bash:check && npm run vision:check`；Bash 性能回归用 `npm run benchmark:bash`，它必须直接加载 `release/mac-arm64/DeepSeek Harness.app` 内的模块并通过真实 PTY 快速路径；
+- 依赖补丁：`npm run registry:check && npm run bash:check && npm run vision:check`；Bash 性能回归用 `npm run benchmark:bash`，它必须直接加载 `release/mac-arm64/DeepSeek Harness.app` 内的模块并通过真实 PTY 快速路径；
 - 隔离服务冒烟：复制 release 应用为 `TestApp.app`，用独立 `DSH_HOME` + `ELECTRON_RUN_AS_NODE=1` 启动（注意：插件必须由应用内 node_modules 解析，加载器不认 profile 里的软链指向的其它副本；补丁参数 `--expose-internals` 必须在 bin.js 之前）；
 - 浏览器交互：ego-browser（`useOrCreateTaskSpace` + 手机/桌面视口），测完 `completeTaskSpace`；
 - 打包产物核对：检查 `release/mac-arm64/…app/node_modules/@deepseek-ai/dsh-desktop/lib` 与新代码一致；
@@ -83,6 +86,6 @@ node_modules/          安装产物——绝不提交
 ## 回退方法
 
 - 插件代码回退：改回 `packages/dsh-desktop/lib/*` → `npm run pack:plugin` → `npm run dist` 重打；
-- 依赖补丁回退：`bash:check` / `vision:check` 校验完整性；异常时用干净依赖重装后按 bash → vision 顺序重跑；
+- 依赖补丁回退：`registry:check` / `bash:check` / `vision:check` 校验完整性；异常时用干净依赖重装后按 registry → bash → vision 顺序重跑；
 - 运行时回退：停掉桌面应用、删 `~/Library/Application Support/DeepSeek Harness` 里的桌面配置即可回到默认（不影响 ~/.dsh 数据）；
 - 应用移动后：新位置首次启动会自动重建插件软链、重写 vision 命令路径、重拍可信名单——无需手工清理。
