@@ -65,13 +65,33 @@ async function evaluateRenderer(debugPort) {
       id: 1,
       method: 'Runtime.evaluate',
       params: {
-        expression: `({
-          url: location.href,
-          title: document.title,
-          readyState: document.readyState,
-          failedPluginBanner: document.body?.innerText.includes('Failed to load plugins') ?? false,
-          bodyTextLength: document.body?.innerText.length ?? 0
-        })`,
+        expression: `(() => {
+          const calls = []
+          const previousInputActions = window.__dshInputActions
+          let editBridgeContract = false
+          try {
+            window.__dshInputActions = {
+              setDraft: value => calls.push(['setDraft', value]),
+              submit: () => calls.push(['submit']),
+            }
+            const result = typeof window.__dshEditSend__ === 'function'
+              ? window.__dshEditSend__(' cold-start edit check ')
+              : false
+            editBridgeContract = result === true
+              && JSON.stringify(calls) === JSON.stringify([['setDraft', 'cold-start edit check'], ['submit']])
+          } finally {
+            window.__dshInputActions = previousInputActions
+          }
+          return {
+            url: location.href,
+            title: document.title,
+            readyState: document.readyState,
+            failedPluginBanner: document.body?.innerText.includes('Failed to load plugins') ?? false,
+            bodyTextLength: document.body?.innerText.length ?? 0,
+            editStoreReady: typeof window.__dshEditStore?.subscribe === 'function',
+            editBridgeContract,
+          }
+        })()`,
         returnByValue: true,
       },
     }))
@@ -129,7 +149,7 @@ try {
     250,
     'desktop renderer CDP target',
   )
-  if (renderer.readyState !== 'complete' || renderer.failedPluginBanner || renderer.bodyTextLength < 1) {
+  if (renderer.readyState !== 'complete' || renderer.failedPluginBanner || renderer.bodyTextLength < 1 || !renderer.editStoreReady || !renderer.editBridgeContract) {
     throw new Error(`renderer verification failed: ${JSON.stringify(renderer)}`)
   }
 

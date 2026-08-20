@@ -5403,15 +5403,11 @@ window.__ModuleLoader__.load({
 		}
 		const UserMessageNodeView = (0, react.memo)(function UserMessageNodeView({ node, loadImage, t }) {
 			const data = node.data;
+			const messageText = contentParts(data.content).text;
 			const editState = useDshEditStore();
-			const showEdit = editState !== null && editState.lastUserKey === node.key;
+			const showEdit = editState !== null && editState.lastUserKey === node.key && typeof editState.onEdit === "function" && messageText.trim() !== "";
 			const editing = editState !== null && editState.editing !== null && editState.editing.key === node.key ? editState.editing : null;
 			const [editDraft, setEditDraft] = (0, react.useState)("");
-			const draftInitKey = (0, react.useRef)("");
-			if (editing !== null && draftInitKey.current !== editing.key) {
-				draftInitKey.current = editing.key;
-				setEditDraft(editing.initialText);
-			}
 			(0, react.useEffect)(() => {
 				if (editing === null) return;
 				const textarea = document.querySelector('[data-dsh-edit-editor] textarea');
@@ -5430,7 +5426,8 @@ window.__ModuleLoader__.load({
 					"aria-label": "编辑",
 					onClick: () => {
 						if (!editState || !editState.onEdit) return;
-						editState.onEdit(text);
+						setEditDraft(messageText);
+						editState.onEdit(messageText);
 					},
 					children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconEditOutline16, {})
 				})
@@ -5451,6 +5448,20 @@ window.__ModuleLoader__.load({
 							value: editDraft,
 							onChange: (e) => {
 								setEditDraft(e.target.value);
+							},
+							onKeyDown: (e) => {
+								if (e.key === "Escape") {
+									e.preventDefault();
+									e.stopPropagation();
+									if (typeof window !== "undefined" && typeof window.__dshEditCancel__ === "function") window.__dshEditCancel__();
+									return;
+								}
+								const composing = e.nativeEvent && e.nativeEvent.isComposing === true;
+								if (e.key === "Enter" && !e.shiftKey && !composing && editDraft.trim() !== "") {
+									e.preventDefault();
+									e.stopPropagation();
+									if (typeof window !== "undefined" && typeof window.__dshEditSend__ === "function") window.__dshEditSend__(editDraft);
+								}
 							},
 							rows: Math.min(10, Math.max(3, editDraft.split("\n").length + 1)),
 							"aria-label": "编辑消息",

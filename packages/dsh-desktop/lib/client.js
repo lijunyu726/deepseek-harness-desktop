@@ -3047,25 +3047,28 @@ window.__ModuleLoader__.load({
       // renders the textarea + 取消/发送 buttons; these handlers execute
       // the outcome and clear the edit state.
       window.__dshEditSend__ = (text) => {
-        _setEditSnapshot(null)
         const value = String(text ?? '').trim()
-        if (value === '') return
+        if (value === '') return false
         const ia = window.__dshInputActions
         if (ia && typeof ia.setDraft === 'function' && typeof ia.submit === 'function') {
           ia.setDraft(value)
-          focusComposerAtEnd()
           ia.submit()
+          _setEditSnapshot(null)
+          return true
         } else {
           const textarea = document.querySelector('[data-composer-card] textarea')
-          if (!(textarea instanceof HTMLTextAreaElement)) return
+          if (!(textarea instanceof HTMLTextAreaElement)) return false
           const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
           if (nativeSetter) nativeSetter.call(textarea, value)
           else textarea.value = value
           textarea.dispatchEvent(new Event('input', { bubbles: true }))
+          focusComposerAtEnd()
+          return false
         }
       }
       window.__dshEditCancel__ = () => {
         _setEditSnapshot(null)
+        return true
       }
 
       // Find the last user message key in the chat DOM so we can tell

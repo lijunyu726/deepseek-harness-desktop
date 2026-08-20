@@ -52,11 +52,11 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 四个上游包（conversation / apiproxy / workspace 客户端 / web-frontend）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。
 
-- **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器。
+- **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消）。
 - **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
 - **workspace 客户端补丁**：删除工作区后立即 `ctx.sessions.refresh()` 收敛冷会话；删除确认弹窗文案改为「永久删除其中全部会话与聊天记录，不可恢复」。
 - **web-frontend 补丁**：AttachmentRail 非图片附件渲染文件图标（安装脚本按 `dist/index.html` 动态解析哈希文件名）。
-- **插件（packages/dsh-desktop）**：`saveUploadFile`（base64 → `~/.dsh/sessions/<项目>/<会话ID>/uploads/`，找不到会话目录回退 `~/.dsh/uploads/<会话ID>/`）、`copyFolderUpload`（整体递归复制，2000 文件/200MB/深度 8）、`pickFolderNative`/`resolvePickFolder`（主进程原生目录选择器桥）、`getFileIcon`/`resolveFileIcon`（macOS 图标桥）；客户端侧纯上传菜单、`SessionIdTracker`、`__DSH_SAVE_UPLOAD__`/`__DSH_GET_FILE_ICON__` 页面桥、ESC 编辑状态机。
+- **插件（packages/dsh-desktop）**：`saveUploadFile`（base64 → `~/.dsh/sessions/<项目>/<会话ID>/uploads/`，找不到会话目录回退 `~/.dsh/uploads/<会话ID>/`）、`copyFolderUpload`（整体递归复制，2000 文件/200MB/深度 8）、`pickFolderNative`/`resolvePickFolder`（主进程原生目录选择器桥）、`getFileIcon`/`resolveFileIcon`（macOS 图标桥）；客户端侧纯上传菜单、`SessionIdTracker`、`__DSH_SAVE_UPLOAD__`/`__DSH_GET_FILE_ICON__` 页面桥、ESC 编辑状态机。编辑重发只能走当前会话 `inputActions.setDraft()` → `inputActions.submit()`，成功交接后才清除原位编辑态。
 - **主进程（main/main.mjs）**：`pick-folder` 与 `file-icon` 两种 desktop-event 处理（dialog.showOpenDialog / app.getFileIcon → `executeJavaScript` 回注）。
 - **生命周期**：附件字节在会话目录内，删除会话由 `dsh-session-persistence-jsonl` 递归删目录（既有行为）；归档保留；file 块随会话日志持久化，历史回放保留卡片。
 
@@ -85,5 +85,5 @@ Electron `files` 白名单只允许 `main/`、`assets/`、根 `package.json` 和
 ## 构建与回退
 
 - 构建链：`bash:prepare` → `vision:prepare` → `upload:prepare` → `pack:plugin`（tgz → node_modules）→ `sanitize:runtime` → `ensure-peer-deps`（peer 依赖钉入 package.json）→ electron-builder 运行时白名单（arm64 DMG+zip，未签名）→ `audit:release`。
-- 校验：`npm run bash:check`、`npm run vision:check`、`npm run upload:check`、`node --check`、`npm run benchmark:bash`（加载打包应用内模块的真实 PTY 时延）、`node scripts/verify-cold-start.mjs`（项目外副本、隔离 `DSH_HOME`/userData、服务与渲染器）、最终 `.app` 与 DMG 纯净度复扫。
+- 校验：`npm run bash:check`、`npm run vision:check`、`npm run upload:check`、`npm run edit:check -- --installed`、`node --check`、`npm run benchmark:bash`（加载打包应用内模块的真实 PTY 时延）、`node scripts/verify-cold-start.mjs`（项目外副本、隔离 `DSH_HOME`/userData、服务与渲染器）、最终 `.app` 与 DMG 纯净度复扫。
 - 回退：插件代码回退后重跑 `pack:plugin` + `dist`；补丁异常时重装依赖重跑；运行时行为回退只需清桌面配置目录，数据不受影响。
