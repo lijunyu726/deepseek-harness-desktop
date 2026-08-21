@@ -2,26 +2,26 @@ import { Service } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
+import { homedir, release } from "node:os";
 import { dirname, extname } from "node:path";
+import { z as z$1 } from "zod";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
-import { AttachmentError } from "@deepseek-ai/dsh-attachment";
-import { ReasoningEffortId, contentHasImage, createUserMessage, errorChain, freezeMessage } from "@deepseek-ai/dsh-llm";
+import { AttachmentError, admitEncodedImages } from "@deepseek-ai/dsh-attachment";
+import { ReasoningEffortId, createUserMessage, errorChain, freezeMessage } from "@deepseek-ai/dsh-llm";
 import { isAppendSurfaceEvent, isJsonValue } from "@deepseek-ai/dsh-session";
 import { SessionQueryError } from "@deepseek-ai/dsh-session-query";
 import { SubagentError } from "@deepseek-ai/dsh-subagent";
 import { isUserInvocable } from "@deepseek-ai/dsh-skill";
 import { WorkspaceId, WorkspaceMoveInvalidError, WorkspaceOrderInvalidError, WorkspaceUnknownSessionError, workspaceDomainState, workspaceRecord } from "@deepseek-ai/dsh-workspace";
-import { InvalidPresetIdError, PresetExistsError, PresetMountError, PresetNotWritableError, SETTINGS_NAMESPACE, UnknownPresetError, resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
+import { InvalidPresetIdError, PresetExistsError, PresetMountError, PresetNotWritableError, UnknownPresetError, resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
 import { Zip, ZipDeflate } from "fflate";
 import { GoalError } from "@deepseek-ai/dsh-goal";
 import { SettingsConflictError, settingsNamespace } from "@deepseek-ai/dsh-settings";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { SessionTitleInvalidError } from "@deepseek-ai/dsh-session-title";
-import { z as z$1 } from "zod";
 import { UserQuestionError } from "@deepseek-ai/dsh-user-questions";
 import { DirectoryPickerError } from "@deepseek-ai/dsh-host-directory-picker";
 import { API_REMOTE_FORWARDED_EVENTS, ApiRemoteSessionNotFound, ApiRemoteSubagentSessionOwnership, apiRemoteSubagentOwnershipError, createApiRemoteAgentResolver, hasApiRemoteSubagentOwner, inspectApiRemoteSession } from "@deepseek-ai/dsh-api-remotes";
-import { release } from "node:os";
 import { runNativeCommand } from "@deepseek-ai/dsh-native-command";
 //#region lib/types/session-export.js
 /**
@@ -564,6 +564,7 @@ const imageLimitsProjectionSchema = z$1.object({
 	maxImagesPerMessage: z$1.number().int().positive(),
 	maxMessageImageBytes: z$1.number().int().positive(),
 	maxImagePixels: z$1.number().int().positive(),
+	maxImageDimension: z$1.number().int().positive(),
 	mediaTypes: z$1.array(z$1.string())
 });
 /** session.history response value (projections rides the tail page only). */
@@ -884,25 +885,6 @@ function openNativeTextFile(path, signal, internals = {}) {
 */
 /** Page size when history is called without maxMessages. */
 const DEFAULT_MAX_MESSAGES = 50;
-/**
-* Non-model settings namespaces intentionally served to the Web client. The
-* plugin-owned entries (`agent-loop`, `bash`, `web-search-deepseek`) are the
-* host-plane sections the plugin configuration page edits; a namespace absent
-* here answers `settings-not-exposed` even when its owner registered it, so
-* adding a section to that page is a decision made here rather than by the
-* registering plugin. Moving that declaration to `settings.register()`, so a
-* plugin can expose its own configuration without a change in this package,
-* is deferred work.
-*/
-const WEB_SETTINGS_NAMESPACES = [
-	"agent-loop",
-	"shell",
-	"locale",
-	"permission",
-	"ui-conversation",
-	"ui-theme",
-	"web-search-deepseek"
-];
 /** Provider work budget: at most 100 calls and 2,000 inspected hits. */
 const SESSION_SEARCH_PROVIDER_CALL_LIMIT = 100;
 /** Bound cold-log stat fan-out and settle each started batch before cancellation returns. */
@@ -911,12 +893,6 @@ const COLD_SUMMARY_BATCH_SIZE = 16;
 const DEFAULT_COLD_BLANK_PROBE_MAX_BYTES = 1024;
 /** Conversation message event types (the pagination counting unit). */
 const MESSAGE_TYPES = new Set(["user/message", "assistant/message"]);
-/** Decode the browser payload while rejecting non-canonical base64 forms. */
-function decodeBase64(data) {
-	const decoded = Buffer.from(data, "base64");
-	if (data.length === 0 || decoded.toString("base64") !== data) throw new AttachmentError("Image upload is not canonical base64.", "INVALID_IMAGE_BASE64");
-	return new Uint8Array(decoded);
-}
 /** Validate one prompt as a batch before publishing any durable image object. */
 async function durablePromptContent(ctx, content) {
 	if (content.every((part) => part.type === "text" || part.type === "file")) {
@@ -1000,33 +976,6 @@ function desktopFileContent(content) {
 		];
 	});
 }
-/** Desktop-only delegation from GUI image parts to the configured vision MCP. */
-const DESKTOP_VISION_MCP_TOOL = "mcp__vision__describe_image";
-const DESKTOP_VISION_BRIDGE_TEXT = "[The user attached ";
-const DESKTOP_ATTACHMENT_ID = /^sha256:([a-f0-9]{64})$/;
-function desktopVisionMcpContent(ctx, content) {
-	const root = ctx.attachments.root;
-	if (typeof root !== "string" || root.length === 0) throw new AttachmentError("GUI image delegation requires the local Harness attachment store.", "VISION_MCP_LOCAL_STORE_REQUIRED");
-	return content.flatMap((block) => {
-		if (block.type !== "image") return [block];
-		const attachment = block.attachment;
-		const match = DESKTOP_ATTACHMENT_ID.exec(String(attachment.attachmentId));
-		if (match === null) throw new AttachmentError("GUI image delegation received an unsupported attachment identifier.", "VISION_MCP_ATTACHMENT_ID_UNSUPPORTED");
-		const digest = match[1];
-		const objectPath = `${root}/objects/${digest.slice(0, 2)}/${digest}`;
-		const label = attachment.name === void 0 ? "an image" : `the image named "${attachment.name}"`;
-		return [
-			block,
-			{
-				type: "text",
-				text: `[The user attached ${label} (${attachment.mediaType}, ${attachment.width}x${attachment.height}). It is stored locally at ${JSON.stringify(objectPath)}. You do not see the image directly. Before answering the user's request, call ${DESKTOP_VISION_MCP_TOOL} with this exact absolute path, then use the tool result as image evidence. Do not claim the tool result is a direct visual capability of the current model.]`
-			}
-		];
-	});
-}
-function desktopVisionMcpMessagesCanDelegate(messages) {
-	return messages.every((message) => !contentHasImage(message.content) || message.source?.kind === "user" && message.content.some((block) => block.type === "text" && typeof block.text === "string" && block.text.startsWith(DESKTOP_VISION_BRIDGE_TEXT)));
-}
 /** Search durable content for an image reference, including nested tool results. */
 function imageBlockIn(content, match) {
 	if (!Array.isArray(content)) return void 0;
@@ -1058,10 +1007,6 @@ function imageInEvent(event, match) {
 	}
 	if (event.type === "assistant/chunk" && data.chunk?.type === "block-end") return imageBlockIn([data.chunk.block], match);
 }
-/** True when the current model-visible surface contains an image. */
-function messagesHaveImage(messages) {
-	return messages.some((message) => contentHasImage(message.content));
-}
 /** Resolve the first reference matching one opaque id. */
 function referencedImage(events, attachmentId) {
 	for (const event of events) {
@@ -1069,15 +1014,6 @@ function referencedImage(events, attachmentId) {
 		if (found !== void 0) return found;
 	}
 }
-/**
-* Product settings intentionally exposed beside model-provider namespaces.
-*
-* The agent-preset namespace carries one field — which preset a session with
-* no explicit choice is composed from — and both browser surfaces that offer
-* that choice write it through `settings.update`, so it has to cross the
-* configuration boundary or the pickers silently fail to persist.
-*/
-const PRODUCT_SETTINGS_NAMESPACES = new Set(["ui-onboarding", SETTINGS_NAMESPACE]);
 /** Strict browser-zone profile: UTC or an IANA Area/Location-style identifier. */
 const IANA_TIME_ZONE = /^[A-Za-z][A-Za-z0-9_+.-]*(?:\/[A-Za-z0-9_+.-]+)+$/;
 /** Validate and canonicalize one browser-supplied IANA zone at the wire boundary. */
@@ -1115,7 +1051,10 @@ function paginate(events, beforeSeq, maxMessages) {
 		if (!MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue;
 		count++;
 		const sources = event.sourceEventSeqs;
-		const groupStart = sources !== void 0 && sources.length > 0 ? Math.min(event.seq, ...sources) : event.seq;
+		let groupStart = event.seq;
+		if (sources !== void 0) {
+			for (const source of sources) if (source < groupStart) groupStart = source;
+		}
 		if (count >= maxMessages) {
 			cut = groupStart;
 			break;
@@ -1802,15 +1741,6 @@ function createApiProxy(ctx, defaults) {
 	const presetSwitches = /* @__PURE__ */ new Map();
 	/** Client-chosen identity creation/resume, deduplicated across concurrent retries. */
 	const sessionCreations = /* @__PURE__ */ new Map();
-	/**
-	* Live agent handles minted by this gateway (it is the owning consumer of
-	* every user-session agent it creates or resumes). Retained so session
-	* deletion can dispose a live agent before removing its durable log;
-	* entries are dropped on `session/disposed` — a session disposed by any
-	* other path (owner unload, preset teardown) never resurrects a stale
-	* handle, and a later reopen mints a fresh one.
-	*/
-	const agentHandles = /* @__PURE__ */ new Map();
 	/** Serializes path ownership and explicit title checks with Workspace mutations. */
 	let workspaceCreationChain = Promise.resolve();
 	const pendingQuestions = /* @__PURE__ */ new Map();
@@ -2018,23 +1948,29 @@ function createApiProxy(ctx, defaults) {
 	ctx.inject(["sessionProjections"], (projectionCtx) => {
 		projectionCtx.sessionProjections.register({
 			key: "sessionListMetadata",
-			schema: sessionListMetadataProjectionSchema,
+			stateSchema: sessionListMetadataProjectionSchema,
 			init: () => ({
 				blank: true,
 				lastPromptAt: null
 			}),
 			apply: applySessionListMetadata,
-			view: (state) => state,
+			wire: {
+				viewSchema: sessionListMetadataProjectionSchema,
+				view: (state) => state
+			},
 			stateVersion: 1
 		});
 	});
 	ctx.inject(["sessionProjections", "attachments"], (projectionCtx) => {
 		projectionCtx.sessionProjections.register({
 			key: "imageLimits",
-			schema: imageLimitsProjectionSchema,
+			stateSchema: z$1.null(),
 			init: () => null,
 			apply: (state) => state,
-			view: () => projectionCtx.attachments.imageLimits,
+			wire: {
+				viewSchema: imageLimitsProjectionSchema,
+				view: () => projectionCtx.attachments.imageLimits
+			},
 			stateVersion: 1
 		});
 	});
@@ -2063,9 +1999,6 @@ function createApiProxy(ctx, defaults) {
 			sessionId: session.id,
 			items: queueItems(agent, event.data)
 		});
-	});
-	ctx.on("session/disposed", (session) => {
-		agentHandles.delete(session.id);
 	});
 	/** Remove a wait before settling it: synchronous deletion makes the first claimant win. */
 	function claimQuestion(pending, outcome) {
@@ -2315,13 +2248,11 @@ function createApiProxy(ctx, defaults) {
 						events: inspected.events
 					});
 					assertPresetUnchanged(sessionId, presetId, storedPreset);
-					const resumed = await ctx.agents.resume({
+					return (await ctx.agents.resume({
 						resumeSessionId: sessionId,
 						agentOptions: agentOptions(),
 						setup: (await composeAgent(storedPreset)).setup
-					});
-					agentHandles.set(sessionId, resumed);
-					return resumed.agent;
+					})).agent;
 				}
 				try {
 					await mkdir(cwd, { recursive: true });
@@ -2329,7 +2260,7 @@ function createApiProxy(ctx, defaults) {
 					throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error });
 				}
 				const composition = await composeAgent(presetId);
-				const created = await ctx.agents.create({
+				return (await ctx.agents.create({
 					sessionId,
 					agentOptions: agentOptions(),
 					meta: {
@@ -2337,9 +2268,7 @@ function createApiProxy(ctx, defaults) {
 						...composition.agentPreset === void 0 ? {} : { agentPreset: composition.agentPreset }
 					},
 					setup: composition.setup
-				});
-				agentHandles.set(sessionId, created);
-				return created.agent;
+				})).agent;
 			})().catch((error) => {
 				const live = ctx.agents.get(sessionId);
 				if (live !== void 0) {
@@ -2569,36 +2498,11 @@ function createApiProxy(ctx, defaults) {
 			revision: descriptor.revision
 		};
 	}
-	/** Settings namespaces whose changes can invalidate the model catalog. */
-	function modelProviderNamespaces() {
-		return new Set(ctx.llm.listConfigurableProviders().map((entry) => entry.settingsNs));
-	}
-	/**
-	* The settings namespaces this proxy serves: configurable model providers
-	* plus the small explicit Web preference and product-owned allowlists. The
-	* settings seam remains general; a future registration does not become
-	* remotely readable or writable by default.
-	*/
-	function exposedNamespaces() {
-		const exposed = modelProviderNamespaces();
-		for (const ns of WEB_SETTINGS_NAMESPACES) exposed.add(ns);
-		for (const ns of PRODUCT_SETTINGS_NAMESPACES) exposed.add(ns);
-		return exposed;
-	}
-	/** Refuse a namespace outside the explicit configuration-client boundary. */
-	function notExposed(request, ns) {
-		return err(request, {
-			code: "settings-not-exposed",
-			message: `settings namespace "${ns}" is not exposed to configuration clients`,
-			details: { ns }
-		});
-	}
 	/**
 	* Run one settings write (merge or wholesale replace) and acknowledge with
-	* the namespace's new redacted view. A namespace outside the configuration
-	* boundary is refused before the seam is touched; every seam refusal —
-	* unknown or invalid namespace, read-only provider, schema validation,
-	* storage — becomes one `settings-rejected` carrying the seam's own message.
+	* the namespace's new redacted view. Every seam refusal — unknown or invalid
+	* namespace, read-only provider, schema validation, storage — becomes one
+	* `settings-rejected` carrying the seam's own message.
 	*/
 	async function settingsWrite(request, ns, mode, section, expectedRevision) {
 		const settings = ctx.get("settings");
@@ -2625,7 +2529,6 @@ function createApiProxy(ctx, defaults) {
 		} catch (error) {
 			return rejected(error);
 		}
-		if (!exposedNamespaces().has(ns)) return notExposed(request, ns);
 		try {
 			if (mode === "update") await settings.update(branded, section, expectedRevision);
 			else if (mode === "replace") await settings.replace(branded, section, expectedRevision);
@@ -2854,18 +2757,6 @@ function createApiProxy(ctx, defaults) {
 							model,
 							...reasoningEffort === void 0 ? {} : { reasoningEffort: ReasoningEffortId(reasoningEffort) }
 						});
-						const desktopVisionMessages = [...found.agent.inbox.nextTurn, ...found.agent.inbox.nextStep, ...found.agent.session.deriveMessages()];
-						if (messagesHaveImage(desktopVisionMessages) && !desktopVisionMcpMessagesCanDelegate(desktopVisionMessages)) {
-							const info = await ctx.llm.resolveModelInfo(resolved.provider, resolved.model);
-							if (info.inputModalities !== void 0 && !info.inputModalities.includes("image")) return err(request, {
-								code: "model-unavailable",
-								message: `Model "${resolved.model}" does not accept image input, but this session already contains images; select an image-capable model.`,
-								details: {
-									provider,
-									model
-								}
-							});
-						}
 						const selected = {
 							provider: resolved.provider,
 							model: resolved.model,
@@ -2959,7 +2850,7 @@ function createApiProxy(ctx, defaults) {
 				const childId = `session-${randomUUID()}`;
 				const forkComposition = await composeAgent(resolveSessionPreset(source));
 				try {
-					const forked = await ctx.agents.create({
+					await ctx.agents.create({
 						sessionId: childId,
 						seed: events.slice(0, cut),
 						meta: {
@@ -2971,7 +2862,6 @@ function createApiProxy(ctx, defaults) {
 						agentOptions: agentOptions(),
 						setup: forkComposition.setup
 					});
-					agentHandles.set(childId, forked);
 				} catch (error) {
 					return err(request, {
 						code: "internal",
@@ -2993,9 +2883,8 @@ function createApiProxy(ctx, defaults) {
 				}
 				return ok(request, { sessionId: childId });
 			},
-			async prompt(request, signal) {
+			async prompt(request) {
 				const { sessionId, mode, content, clientTimeZone } = request.payload;
-				signal?.throwIfAborted();
 				const canonicalTimeZone = clientTimeZone === void 0 ? void 0 : canonicalClientTimeZone(clientTimeZone);
 				if (clientTimeZone !== void 0 && canonicalTimeZone === void 0) return err(request, {
 					code: "invalid-time-zone",
@@ -3013,18 +2902,20 @@ function createApiProxy(ctx, defaults) {
 				const hasImage = content.some((part) => part.type === "image");
 				const admit = async () => {
 					try {
-						let delegateToVisionMcp = false;
 						if (hasImage) {
 							const current = selectionFor(agent).current;
 							const modelInfo = await ctx.llm.resolveModelInfo(current.provider, current.model);
-							delegateToVisionMcp = !modelInfo.inputModalities?.includes("image");
+							if (modelInfo.inputModalities !== void 0 && !modelInfo.inputModalities.includes("image")) return err(request, {
+								code: "attachment-error",
+								message: `Model "${current.model}" does not support image input.`,
+								details: { reason: "MODEL_DOES_NOT_SUPPORT_IMAGES" }
+							});
 						}
 						signal?.throwIfAborted();
 						const durableContent = await durablePromptContent(ctx, content);
 						signal?.throwIfAborted();
-						const modelContent = delegateToVisionMcp ? desktopVisionMcpContent(ctx, durableContent) : durableContent;
 						const message = createUserMessage({
-							content: desktopFileContent(modelContent),
+							content: desktopFileContent(durableContent),
 							source
 						});
 						if (mode === "steer") agent.steer(message);
@@ -3388,23 +3279,6 @@ function createApiProxy(ctx, defaults) {
 					});
 				}
 				return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] });
-			},
-			async deleteSession(request) {
-				const { sessionId } = request.payload;
-				const attached = ctx.sessions.get(sessionId);
-				const live = ctx.agents.get(sessionId);
-				if (attached !== void 0 && hasSubagentOwner(attached, live)) return err(request, subagentOwnershipError(sessionId));
-				try {
-					await teardownSessionForDelete(sessionId);
-				} catch (error) {
-					if (!(error instanceof WorkspaceUnknownSessionError)) throw error;
-					return err(request, {
-						code: "session-not-found",
-						message: error.message,
-						details: { sessionId }
-					});
-				}
-				return ok(request, { deleted: true });
 			}
 		},
 		host: {
@@ -3416,6 +3290,7 @@ function createApiProxy(ctx, defaults) {
 					provider: selection.provider,
 					model: selection.model,
 					attachedSessions: ctx.agents.list().length,
+					home: homedir(),
 					canOpenPath: canOpenPaths()
 				}));
 			},
@@ -3682,11 +3557,10 @@ function createApiProxy(ctx, defaults) {
 			describe(request) {
 				const settings = ctx.get("settings");
 				if (settings === void 0) return Promise.resolve(err(request, settingsAbsent()));
-				const exposed = exposedNamespaces();
 				return Promise.resolve(ok(request, {
 					writable: settings.writable,
 					hasDocument: settings.documentPath !== void 0,
-					namespaces: settings.describe({ redactSecrets: true }).filter((descriptor) => exposed.has(String(descriptor.ns))).map(namespaceView)
+					namespaces: settings.describe({ redactSecrets: true }).map(namespaceView)
 				}));
 			},
 			async openDocument(request, signal) {
@@ -4284,11 +4158,6 @@ const rpcErrorSchema = z$1.discriminatedUnion("code", [
 		details: z$1.object({ ns: z$1.string() })
 	}),
 	z$1.object({
-		code: z$1.literal("settings-not-exposed"),
-		message: z$1.string(),
-		details: z$1.object({ ns: z$1.string() })
-	}),
-	z$1.object({
 		code: z$1.literal("settings-conflict"),
 		message: z$1.string(),
 		details: z$1.object({
@@ -4432,6 +4301,7 @@ const hostDescribeValueSchema = z$1.object({
 	provider: z$1.string().optional(),
 	model: z$1.string().optional(),
 	attachedSessions: z$1.number().int().nonnegative(),
+	home: z$1.string(),
 	canOpenPath: z$1.boolean()
 });
 /** host.pickDirectory request payload (empty object literal). */
@@ -4525,10 +4395,6 @@ const workspaceInsertSessionBeforeValueSchema = z$1.object({ workspace: workspac
 const workspaceArchiveSessionRequestSchema = z$1.object({ sessionId: sessionIdSchema });
 /** workspace.archiveSession response value: the full updated archive set. */
 const workspaceArchiveSessionValueSchema = z$1.object({ archivedSessionIds: z$1.array(sessionIdSchema) });
-/** workspace.deleteSession request payload. */
-const workspaceDeleteSessionRequestSchema = z$1.object({ sessionId: sessionIdSchema });
-/** workspace.deleteSession response value. */
-const workspaceDeleteSessionValueSchema = z$1.object({ deleted: z$1.literal(true) });
 //#endregion
 //#region lib/types/api/skills.schema.js
 /**
@@ -4920,7 +4786,7 @@ const UNARY_ROUTES = {
 	},
 	"session.prompt": {
 		schema: sessionPromptRequestSchema,
-		invoke: (api, r, signal) => api.sessions.prompt(r, signal)
+		invoke: (api, r) => api.sessions.prompt(r)
 	},
 	"session.attachment": {
 		schema: sessionAttachmentRequestSchema,
@@ -4997,10 +4863,6 @@ const UNARY_ROUTES = {
 	"workspace.archiveSession": {
 		schema: workspaceArchiveSessionRequestSchema,
 		invoke: (api, r) => api.workspace.archiveSession(r)
-	},
-	"workspace.deleteSession": {
-		schema: workspaceDeleteSessionRequestSchema,
-		invoke: (api, r) => api.workspace.deleteSession(r)
 	},
 	"skill.list": {
 		schema: skillListRequestSchema,
@@ -5490,7 +5352,6 @@ const UNARY_VALUE_SCHEMAS = {
 	"workspace.insertBefore": workspaceInsertBeforeValueSchema,
 	"workspace.insertSessionBefore": workspaceInsertSessionBeforeValueSchema,
 	"workspace.archiveSession": workspaceArchiveSessionValueSchema,
-	"workspace.deleteSession": workspaceDeleteSessionValueSchema,
 	"skill.list": skillListValueSchema,
 	"agentPreset.list": agentPresetListValueSchema,
 	"agentPreset.select": agentPresetSelectValueSchema,
@@ -5708,8 +5569,7 @@ var AbstractApiClient = class {
 		delete: (payload, signal) => this.callUnary("workspace.delete", payload, signal),
 		insertBefore: (payload, signal) => this.callUnary("workspace.insertBefore", payload, signal),
 		insertSessionBefore: (payload, signal) => this.callUnary("workspace.insertSessionBefore", payload, signal),
-		archiveSession: (payload, signal) => this.callUnary("workspace.archiveSession", payload, signal),
-		deleteSession: (payload, signal) => this.callUnary("workspace.deleteSession", payload, signal)
+		archiveSession: (payload, signal) => this.callUnary("workspace.archiveSession", payload, signal)
 	};
 	skills = { list: (payload, signal) => this.callUnary("skill.list", payload, signal) };
 	agentPresets = {

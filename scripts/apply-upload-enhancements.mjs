@@ -1,8 +1,8 @@
 /**
  * Apply the desktop upload enhancements to the installed upstream packages.
  *
- * The three upstream packages (dsh-client-ui-conversation, dsh-host-apiproxy,
- * dsh-web-frontend) are NOT built here — they arrive as npm dependencies.
+ * The two upstream packages (dsh-client-ui-conversation and
+ * dsh-host-apiproxy) are NOT built here — they arrive as npm dependencies.
  * This repository ships the enhanced full files under patches/ and this
  * script overlays them onto the repo's node_modules before electron-builder
  * packages them (same reproducible-patch pattern as apply-vision-bridge.mjs,
@@ -12,8 +12,10 @@
  * Overlays (idempotent; originals kept as <file>.upstream-backup):
  *   patches/conversation-client.js  → dsh-client-ui-conversation/lib/client.js
  *   patches/apiproxy-index.js       → dsh-host-apiproxy/lib/index.js
- *   patches/workspace-client.js     → dsh-client-ui-workspace/lib/client.js
- *   patches/web-frontend-bundle.js  → dsh-web-frontend/dist/assets/index-<hash>.js
+ *
+ * The rc.2 workspace and web-frontend bundles are deliberately left native:
+ * their attachment slots and archive lifecycle replaced the rc.6 surfaces
+ * that the former desktop overlays targeted.
  */
 
 import { copyFileSync, existsSync, readFileSync } from 'node:fs'
@@ -31,15 +33,6 @@ const checkOnly = args.includes('--check')
 
 const CONVERSATION_TARGET = path.join(nm, 'dsh-client-ui-conversation', 'lib', 'client.js')
 const APIPROXY_TARGET = path.join(nm, 'dsh-host-apiproxy', 'lib', 'index.js')
-const WORKSPACE_CLIENT_TARGET = path.join(nm, 'dsh-client-ui-workspace', 'lib', 'client.js')
-
-function frontendTarget() {
-  const dist = path.join(nm, 'dsh-web-frontend', 'dist')
-  const html = path.join(dist, 'index.html')
-  if (!existsSync(html)) return null
-  const match = /assets\/index-[A-Za-z0-9_-]+\.js/.exec(readFileSync(html, 'utf8'))
-  return match === null ? null : path.join(dist, match[0])
-}
 
 /** Overlay one file, keeping the upstream original as <file>.upstream-backup. */
 function overlay(patchFile, target) {
@@ -54,22 +47,18 @@ function overlay(patchFile, target) {
 }
 
 const MARKERS = {
-  [CONVERSATION_TARGET]: '__DSH_SAVE_UPLOAD__',
-  [APIPROXY_TARGET]: 'desktopFileContent',
-  [WORKSPACE_CLIENT_TARGET]: 'permanently deletes all of its sessions',
+  [CONVERSATION_TARGET]: ['__DSH_SAVE_UPLOAD__', 'dsh-desktop:navigate-prompt', 'data-dsh-edit-editor'],
+  [APIPROXY_TARGET]: ['desktopFileContent', 'admitEncodedImages'],
 }
 
 function check() {
   let ok = true
-  for (const [target, marker] of Object.entries(MARKERS)) {
-    const applied = existsSync(target) && readFileSync(target, 'utf8').includes(marker)
+  for (const [target, markers] of Object.entries(MARKERS)) {
+    const source = existsSync(target) ? readFileSync(target, 'utf8') : ''
+    const applied = markers.every((marker) => source.includes(marker))
     console.log(`[upload-check] ${applied ? 'OK' : 'MISSING'} ${path.relative(root, target)}`)
     if (!applied) ok = false
   }
-  const fe = frontendTarget()
-  const feApplied = fe !== null && readFileSync(fe, 'utf8').includes('isImage===!1')
-  console.log(`[upload-check] ${feApplied ? 'OK' : 'MISSING'} ${fe === null ? 'dsh-web-frontend/dist/assets/index-<hash>.js (unresolved)' : path.relative(root, fe)}`)
-  if (!feApplied) ok = false
   if (!ok) throw new Error('upload enhancements not fully applied — run `npm run upload:prepare`')
 }
 
@@ -78,9 +67,5 @@ if (checkOnly) {
 } else {
   overlay(path.join(patchesDir, 'conversation-client.js'), CONVERSATION_TARGET)
   overlay(path.join(patchesDir, 'apiproxy-index.js'), APIPROXY_TARGET)
-  overlay(path.join(patchesDir, 'workspace-client.js'), WORKSPACE_CLIENT_TARGET)
-  const fe = frontendTarget()
-  if (fe === null) throw new Error('cannot resolve dsh-web-frontend main bundle from dist/index.html')
-  overlay(path.join(patchesDir, 'web-frontend-bundle.js'), fe)
   check()
 }

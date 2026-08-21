@@ -10,7 +10,6 @@ window.__ModuleLoader__.load({
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
-		let _deepseek_ai_dsh_client_ui_attachment = require("@deepseek-ai/dsh-client-ui-attachment");
 		//#region lib/types/client/stores.js
 		/**
 		* Per-session chat store shared by conversation and details registrations.
@@ -137,8 +136,10 @@ window.__ModuleLoader__.load({
 			* @param text - serialized prompt text.
 			* @param imageIds - ordered draft-local attachment ids.
 			* @param mode - queue or steer delivery selected by composer policy.
+			* @param signal - optional cancellation for the complete Host admission.
+			* @returns the Host admission outcome; local attachment preparation failures reject.
 			*/
-			async sendSession(session, text, imageIds, mode) {
+			async sendSession(session, text, imageIds, mode, signal) {
 				const attachments = this.draftImages(imageIds);
 				if (attachments.length !== imageIds.length) throw new Error("conversation.sendSession: one or more draft images are no longer available");
 				const sessionId = session?.sessionId ?? "";
@@ -146,9 +147,9 @@ window.__ModuleLoader__.load({
 					type: "text",
 					text
 				}]];
-				const result = await session.prompt(content, mode);
-				if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`);
+				if (!(await session.prompt(content, mode, signal)).ok) return { kind: "error" };
 				this.releaseDraftImages(attachments);
+				return { kind: "success" };
 			}
 			/**
 			* Create runtime-only draft images and their object URLs.
@@ -175,6 +176,18 @@ window.__ModuleLoader__.load({
 					if (attachment !== void 0) attachments.push(attachment);
 				}
 				return attachments;
+			}
+			/**
+			* Serialize ordered draft images to command-submit wire payloads without
+			* sending or releasing them (the composer releases only after the command
+			* settles successfully).
+			* @param imageIds - ordered draft-local attachment ids.
+			* @returns base64 payloads in id order.
+			*/
+			async serializeDraftImages(imageIds) {
+				const attachments = this.draftImages(imageIds);
+				if (attachments.length !== imageIds.length) throw new Error("conversation.serializeDraftImages: one or more draft images are no longer available");
+				return Promise.all(attachments.map((attachment) => this.encodeImage(attachment.file)));
 			}
 			/**
 			* Release one browser-owned draft image and preview URL.
@@ -297,7 +310,7 @@ window.__ModuleLoader__.load({
 					if (isImageFile(file)) {
 						return [{
 							type: "image",
-							mediaType: file.type,
+							mediaType: imageMediaType(file.type),
 							data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
 							...file.name === "" ? {} : { name: file.name }
 						}];
@@ -437,6 +450,18 @@ window.__ModuleLoader__.load({
 				subscribe: (fn) => session.subscribe(fn)
 			};
 		}
+		//#endregion
+		//#region lib/types/client/input/machine.js
+		const REFERENCE_PLACEHOLDER_RE = /[\uE100-\uE11D\uFFFC]/gu;
+		/**
+		* Build the inline draft text whose leading marker is decorated as the
+		* reference icon in the backdrop.
+		* @param reference - reference insertion with its cached display projection.
+		* @returns display text with one marker glyph followed by the complete label.
+		*/
+		function referenceDraftText(reference) {
+			return `@${reference.label}`;
+		}
 		/** The machine never writes the queue; the wiring layer overlays the queue store's projection. */
 		const EMPTY_QUEUE$1 = [];
 		/** Undo ring depth (bounded self-managed transaction log). */
@@ -480,6 +505,24 @@ window.__ModuleLoader__.load({
 			};
 		}
 		/**
+		* Expand the draft's reference ranges into their occurrences' clipboard text
+		* for persistence and clipboard projection. Table order is offset order, so
+		* one linear walk pairs ranges with entries.
+		* @param state - published input state.
+		* @returns the plain-text projection of the draft.
+		*/
+		function projectClipboard(state) {
+			const { draft, occurrences } = state;
+			if (occurrences.length === 0) return draft;
+			let out = "";
+			let cursor = 0;
+			for (const o of occurrences) {
+				out += draft.slice(cursor, o.offset) + o.clipboardText;
+				cursor = o.offset + o.length;
+			}
+			return out + draft.slice(cursor);
+		}
+		/**
 		* Pure input machine, one instance per session (per-session isolation is by
 		* construction). The machine constructs one AbortController per SubmitAttempt
 		* at enter time and aborts it itself on release; the shell never aborts, it
@@ -518,7 +561,8 @@ window.__ModuleLoader__.load({
 					phase: this.phase,
 					...c ? { claim: {
 						token: c.token,
-						...c.hint !== void 0 ? { hint: c.hint } : {}
+						...c.hint !== void 0 ? { hint: c.hint } : {},
+						...c.images === true ? { images: true } : {}
 					} } : {},
 					occurrences: this.occurrences,
 					...this.paste !== void 0 ? { paste: this.paste } : {},
@@ -570,14 +614,14 @@ window.__ModuleLoader__.load({
 			}
 			/**
 			* Reconcile the occurrence table with one edit (old-draft coordinates):
-			* entries past the range shift by the length delta; entries whose
-			* placeholder sits inside the replaced range go away whole (a
-			* deletion/replacement intersecting a placeholder acts on the whole chip).
+			* entries past the range shift by the length delta; an edit that intersects
+			* a reference range removes its structured occurrence and leaves the edited
+			* characters as ordinary draft text.
 			*/
 			reconcile(range) {
 				const delta = range.insertedLength - (range.end - range.start);
 				const kept = [];
-				for (const o of this.occurrences) if (o.offset < range.start) kept.push(o);
+				for (const o of this.occurrences) if (o.offset + o.length <= range.start) kept.push(o);
 				else if (o.offset >= range.end) kept.push(delta === 0 ? o : {
 					...o,
 					offset: o.offset + delta
@@ -592,14 +636,16 @@ window.__ModuleLoader__.load({
 				}
 			}
 			/** Mint one occurrence at a draft offset. */
-			mint(reference, offset) {
+			mint(reference, offset, length) {
 				this.occurrenceSeq += 1;
 				return {
 					occurrenceId: this.occurrenceSeq,
 					source: reference.source,
 					ref: reference.ref,
 					offset,
+					length,
 					label: reference.label,
+					...reference.appearance === void 0 ? {} : { appearance: reference.appearance },
 					clipboardText: reference.clipboardText
 				};
 			}
@@ -656,22 +702,24 @@ window.__ModuleLoader__.load({
 				return [];
 			}
 			/**
-			* Shared chip-insertion transaction: replace [span) with one placeholder
+			* Shared reference-insertion transaction: replace [span) with one inline
 			* occurrence (insert-ref and paste-upgrade both land here). A separating
-			* space follows the chip unless one is already next.
-			* @returns the inserted length (placeholder plus optional gap).
+			* space follows the reference unless one is already next.
+			* @returns the inserted length (display text plus optional gap).
 			*/
 			replaceSpanWithChip(reference, span) {
 				this.pushTxn();
 				this.typingRun = void 0;
 				const tail = this.draft.slice(span.end);
-				const inserted = "￼" + (tail.length === 0 || tail[0] !== " " ? " " : "");
+				const gap = tail.length === 0 || tail[0] !== " " ? " " : "";
+				const displayText = referenceDraftText(reference);
+				const inserted = displayText + gap;
 				this.reconcile({
 					start: span.start,
 					end: span.end,
 					insertedLength: inserted.length
 				});
-				this.withMinted([this.mint(reference, span.start)]);
+				this.withMinted([this.mint(reference, span.start, displayText.length)]);
 				this.adopt(this.draft.slice(0, span.start) + inserted + tail);
 				this.watchClaim();
 				return inserted.length;
@@ -760,7 +808,7 @@ window.__ModuleLoader__.load({
 				return [];
 			}
 			/**
-			* Paste as one transaction: the text (U+FFFC-sanitized) replaces the
+			* Paste as one transaction: the text (reference-placeholder-sanitized) replaces the
 			* selection; hot-snapshot sync matches componentize inside the SAME
 			* transaction (one undo returns to pre-paste); a match attempt opens for
 			* the async remainder while the phase still accepts reference mutations.
@@ -768,7 +816,7 @@ window.__ModuleLoader__.load({
 			onPasteBegin(rawText, selection, components = [], generation = 0) {
 				const { start, end } = selection;
 				if (start < 0 || start > end || end > this.draft.length) return [];
-				const text = rawText.split("￼").join("");
+				const text = rawText.replace(REFERENCE_PLACEHOLDER_RE, "");
 				this.pushTxn(selection);
 				this.typingRun = void 0;
 				const sorted = [...components].sort((a, b) => a.start - b.start);
@@ -777,8 +825,9 @@ window.__ModuleLoader__.load({
 				let cursor = 0;
 				for (const c of sorted) {
 					inserted += text.slice(cursor, c.start);
-					minted.push(this.mint(c.reference, start + inserted.length));
-					inserted += "￼";
+					const displayText = referenceDraftText(c.reference);
+					minted.push(this.mint(c.reference, start + inserted.length, displayText.length));
+					inserted += displayText;
 					cursor = c.end;
 				}
 				inserted += text.slice(cursor);
@@ -864,8 +913,11 @@ window.__ModuleLoader__.load({
 						draft: this.draft
 					}];
 				}
+				const attempt = this.beginAttempt(mode);
+				this.phase = "submitting";
 				return [{
 					type: "default-sink",
+					attempt,
 					draft: this.draft,
 					mode
 				}];
@@ -883,13 +935,18 @@ window.__ModuleLoader__.load({
 						args: argsAfter(attempt.draftSnapshot, outcome.claim.token)
 					}];
 				}
+				if (outcome === void 0) {
+					this.phase = "submitting";
+					return [{
+						type: "default-sink",
+						attempt,
+						draft: attempt.draftSnapshot,
+						mode: attempt.mode
+					}];
+				}
 				this.inflight = void 0;
 				this.phase = "plain";
-				return outcome === void 0 ? [{
-					type: "default-sink",
-					draft: attempt.draftSnapshot,
-					mode: attempt.mode
-				}] : [];
+				return [];
 			}
 			onAdjudicationFailed(attempt, message) {
 				if (this.phase !== "adjudicating" || this.inflight?.attempt.seq !== attempt.seq) return [];
@@ -909,7 +966,8 @@ window.__ModuleLoader__.load({
 					this.phase = "plain";
 					this.claim = void 0;
 					this.occurrences = [];
-					this.adopt("");
+					const snapshot = flight.attempt.draftSnapshot;
+					this.adopt(this.draft !== snapshot && this.draft.startsWith(snapshot) ? this.draft.slice(snapshot.length) : "");
 					this.log = [];
 					this.redoStack = [];
 					this.typingRun = void 0;
@@ -920,10 +978,10 @@ window.__ModuleLoader__.load({
 						text: ev.outcome.text
 					}] : [];
 				}
-				const text = ev.message ?? ev.outcome?.text ?? "command failed";
+				const text = ev.message ?? ev.outcome?.text;
 				if (this.draft === flight.attempt.draftSnapshot && this.claim !== void 0 && this.draft.startsWith(this.claim.token)) {
 					this.phase = "claimed";
-					return [{
+					return text === void 0 ? [] : [{
 						type: "notice",
 						level: "error",
 						text
@@ -931,15 +989,15 @@ window.__ModuleLoader__.load({
 				}
 				this.phase = "plain";
 				this.claim = void 0;
-				return [{
+				return text === void 0 ? [] : [{
 					type: "notice",
 					level: "error",
 					text
 				}];
 			}
-			/** Ordinary send accepted: clear as a commit (no undo unit; sent content
-			*  must not be resurrectable — same discipline as submit-settled success). */
+			/** Cut undo state after an accepted image-only send. */
 			onSendCommitted() {
+				if (this.phase !== "plain") return [];
 				this.claim = void 0;
 				this.occurrences = [];
 				this.adopt("");
@@ -982,7 +1040,7 @@ window.__ModuleLoader__.load({
 			deps;
 			/** Published machine state + queue overlay (the InputZone currency source). */
 			state;
-			/** Latest surfaced notice (null after clear); the wiring renders it beside the error strip. */
+			/** Latest surfaced notice (null after clear); the bar renders errors as banners and information inline. */
 			notices = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)(null);
 			/** The public provide-channel action face (one stable identity per session). */
 			actions = {
@@ -1002,10 +1060,12 @@ window.__ModuleLoader__.load({
 			};
 			core = new InputMachine({ now: () => Date.now() });
 			noticeSeq = 0;
-			lastDraft = "";
+			lastMirroredDraft = "";
 			imageIds = [];
+			/** One image-only send at a time: Enter during the Host round-trip is a no-op. */
+			imageSendInFlight = false;
 			disposed = false;
-			/** Draft persistence mirror (chat store write; receives the clipboard projection, never raw placeholders). */
+			/** Draft persistence mirror (chat store write; receives the clipboard projection, never display-only ranges). */
 			mirrorFn;
 			constructor(deps) {
 				this.deps = deps;
@@ -1035,8 +1095,13 @@ window.__ModuleLoader__.load({
 				this.publish();
 				return true;
 			}
-			/** Remove one image id from this draft. */
+			/**
+			* Remove one image id from this draft. Busy admission phases refuse, like
+			* {@link addImages}: a removal landing while a command submit serializes
+			* would otherwise vanish from the rail yet still ride the in-flight send.
+			*/
 			removeImage(id) {
+				if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting") return;
 				const next = this.imageIds.filter((candidate) => candidate !== id);
 				if (next.length === this.imageIds.length) return;
 				this.imageIds = next;
@@ -1051,15 +1116,6 @@ window.__ModuleLoader__.load({
 				const next = this.imageIds.filter((id) => keep.has(id));
 				if (next.length === this.imageIds.length) return;
 				this.imageIds = next;
-				this.publish();
-			}
-			/**
-			* Restore a failed attempt before any images added after its admission.
-			* @param ids - failed attempt image ids.
-			*/
-			restoreImages(ids) {
-				const current = new Set(this.imageIds);
-				this.imageIds = [...ids.filter((id) => !current.has(id)), ...this.imageIds];
 				this.publish();
 			}
 			/**
@@ -1110,7 +1166,24 @@ window.__ModuleLoader__.load({
 			*/
 			submit(mode = "queue") {
 				if (this.snapshot.draft.trim() === "" && this.imageIds.length > 0) {
-					if (this.snapshot.phase === "plain") this.deps.defaultSink("", [...this.imageIds], mode);
+					if (this.snapshot.phase === "plain" && !this.imageSendInFlight) {
+						const imageIds = [...this.imageIds];
+						this.imageSendInFlight = true;
+						this.deps.defaultSink("", imageIds, mode, new AbortController().signal).then((outcome) => {
+							this.imageSendInFlight = false;
+							if (this.disposed) return;
+							if (outcome.kind === "success") this.commitSend(imageIds);
+							else if (outcome.text !== void 0) this.notify("error", outcome.text);
+						}, (error) => {
+							this.imageSendInFlight = false;
+							if (!this.disposed) this.notify("error", error instanceof Error ? error.message : String(error));
+						});
+					}
+					return;
+				}
+				const before = this.snapshot;
+				if (before.phase === "claimed" && this.imageIds.length > 0 && before.claim?.images !== true) {
+					this.notify("error", this.deps.commandImages.unsupportedNotice(before.claim?.token ?? before.draft));
 					return;
 				}
 				this.run(this.core.dispatch({
@@ -1238,13 +1311,19 @@ window.__ModuleLoader__.load({
 			* a scan-derived decoration, never state.
 			* @param text - the plain reference text to splice in (e.g. `/name `).
 			* @param span - pick-time span snapshot (draftRev CAS).
+			* @param keepCompleting - re-track at the caret after the splice so an open
+			* token (a directory pick's trailing slash) reopens the menu.
 			* @returns whether the text was applied.
 			*/
-			insertText(text, span) {
+			insertText(text, span, keepCompleting = false) {
 				const snapshot = this.core.state;
 				if (span.draftRev !== snapshot.draftRev) return false;
 				const draft = snapshot.draft;
 				this.setDraft(draft.slice(0, span.start) + text + draft.slice(span.end));
+				if (keepCompleting) {
+					const next = this.snapshot;
+					this.deps.inputTriggers?.()?.track(next.draft, span.start + text.length, { tier: guardOf(next.phase) }, next.draftRev);
+				}
 				return true;
 			}
 			/**
@@ -1304,23 +1383,23 @@ window.__ModuleLoader__.load({
 						this.beginSubmit(fx.attempt, fx.claim, fx.args);
 						return;
 					case "default-sink":
-						this.sinkSerialized(fx.draft, fx.mode);
+						this.sinkSerialized(fx.attempt, fx.draft, fx.mode);
 						return;
 					default: return;
 				}
 			}
 			/**
 			* Prompt serialization before the sink: expand each
-			* placeholder to its owner's model form via the session controller's
+			* inline reference range to its owner's model form via the session controller's
 			* codec routing. Owner missing / serialize failure / disposal blocks the
 			* send — notice + draft and chips retained, never a silent downgrade to
 			* the clipboard text. Chip-free drafts skip the async detour.
 			*/
-			sinkSerialized(draft, mode) {
+			sinkSerialized(attempt, draft, mode) {
 				const imageIds = [...this.imageIds];
 				const occurrences = this.core.state.occurrences;
 				if (occurrences.length === 0) {
-					this.deps.defaultSink(draft.trim(), imageIds, mode);
+					this.settleSubmit(attempt, this.deps.defaultSink(draft.trim(), imageIds, mode, attempt.signal), imageIds);
 					return;
 				}
 				const inputTriggers = this.deps.inputTriggers?.();
@@ -1329,6 +1408,7 @@ window.__ModuleLoader__.load({
 					if (inputTriggers === void 0) throw new Error(`no serializer for reference source "${o.source}"`);
 					return {
 						offset: o.offset,
+						length: o.length,
 						text: await inputTriggers.serializeReference(o.source, o.ref, controller.signal)
 					};
 				})).then((parts) => {
@@ -1337,15 +1417,44 @@ window.__ModuleLoader__.load({
 					let cursor = 0;
 					for (const part of parts) {
 						out += draft.slice(cursor, part.offset) + part.text;
-						cursor = part.offset + 1;
+						cursor = part.offset + part.length;
 					}
 					out += draft.slice(cursor);
-					this.deps.defaultSink(out.trim(), imageIds, mode);
+					this.settleSubmit(attempt, this.deps.defaultSink(out.trim(), imageIds, mode, attempt.signal), imageIds);
 				}, (error) => {
 					controller.abort();
-					if (this.disposed) return;
+					if (this.dead(attempt)) return;
 					const message = error instanceof Error ? error.message : String(error);
-					this.notify("error", message);
+					this.run(this.core.dispatch({
+						type: "submit-settled",
+						attempt,
+						ok: false,
+						message
+					}));
+				});
+			}
+			/** Settle one admission attempt; successful sends consume only their captured images. */
+			settleSubmit(attempt, pending, imageIds = []) {
+				pending.then((outcome) => {
+					if (this.dead(attempt)) return;
+					if (outcome.kind === "success" && imageIds.length > 0) {
+						const submitted = new Set(imageIds);
+						this.imageIds = this.imageIds.filter((id) => !submitted.has(id));
+					}
+					this.run(this.core.dispatch({
+						type: "submit-settled",
+						attempt,
+						ok: outcome.kind === "success",
+						outcome
+					}));
+				}, (error) => {
+					if (this.dead(attempt)) return;
+					this.run(this.core.dispatch({
+						type: "submit-settled",
+						attempt,
+						ok: false,
+						message: error instanceof Error ? error.message : String(error)
+					}));
 				});
 			}
 			/** Enter adjudication: poll the session controller; failure = notice + draft retained (never a silent downgrade). */
@@ -1359,7 +1468,7 @@ window.__ModuleLoader__.load({
 					}));
 					return;
 				}
-				inputTriggers.adjudicate(draft.trim(), attempt.signal).then((outcome) => {
+				inputTriggers.adjudicate(draft.trim(), attempt.signal, { images: this.imageIds.length }).then((outcome) => {
 					if (this.dead(attempt)) return;
 					this.run(this.core.dispatch({
 						type: "adjudicated",
@@ -1376,15 +1485,32 @@ window.__ModuleLoader__.load({
 					}));
 				});
 			}
-			/** The submit transaction: claim.submit against the session scope; ok maps from the outcome kind. */
+			/**
+			* The submit transaction: claim.submit against the session scope; ok maps
+			* from the outcome kind. An accepting claim receives the serialized draft
+			* images, which are cleared and released only on a success outcome; a
+			* failure (serialize, transport, or handler error) keeps draft and images
+			* for correction.
+			*/
 			beginSubmit(attempt, claim, args) {
-				Promise.resolve().then(() => claim.submit(args, this.deps.actx)).then((outcome) => {
-					if (this.dead(attempt)) return;
+				const imageIds = claim.images === true ? [...this.imageIds] : [];
+				Promise.resolve().then(async () => {
+					const images = imageIds.length > 0 ? await this.deps.commandImages.serialize(imageIds) : [];
+					if (this.dead(attempt)) return void 0;
+					return claim.submit(args, this.deps.actx, images);
+				}).then((outcome) => {
+					if (outcome === void 0 || this.dead(attempt)) return;
+					if (outcome.kind === "success" && imageIds.length > 0) {
+						const submitted = new Set(imageIds);
+						this.imageIds = this.imageIds.filter((id) => !submitted.has(id));
+						this.deps.commandImages.release(imageIds);
+					}
 					this.run(this.core.dispatch({
 						type: "submit-settled",
 						attempt,
 						ok: outcome.kind === "success",
-						outcome
+						outcome,
+						...outcome.kind === "error" && outcome.text === void 0 ? { message: "command failed" } : {}
 					}));
 				}, (error) => {
 					if (this.dead(attempt)) return;
@@ -1411,9 +1537,10 @@ window.__ModuleLoader__.load({
 			publish() {
 				const next = this.compose();
 				this.state.set(next);
-				if (next.draft !== this.lastDraft) {
-					this.lastDraft = next.draft;
-					this.mirrorFn?.(next.draft);
+				const mirroredDraft = projectClipboard(next);
+				if (mirroredDraft !== this.lastMirroredDraft) {
+					this.lastMirroredDraft = mirroredDraft;
+					this.mirrorFn?.(mirroredDraft);
 				}
 			}
 		};
@@ -1459,11 +1586,17 @@ window.__ModuleLoader__.load({
 					inputTriggers: () => this.controller(actx),
 					popup: () => this.popup(actx),
 					queue: queueReadFaceOf(session),
-					defaultSink: (text, imageIds, mode) => {
-						this.sink(session, text, imageIds, mode);
-					},
+					defaultSink: (text, imageIds, mode, signal) => this.sink(session, text, imageIds, mode, signal),
 					steerQueue: () => {
 						this.steerQueue(session, shell);
+					},
+					commandImages: {
+						serialize: (ids) => this.conversation().serializeDraftImages(ids),
+						release: (ids) => {
+							const conversation = this.rootCtx.get("conversation");
+							for (const imageId of ids) conversation?.releaseDraftImage(imageId);
+						},
+						unsupportedNotice: (token) => this.t("command.imagesUnsupported", { command: token.trim().replace(/^\//u, "") })
 					}
 				});
 				this.shells.set(id, shell);
@@ -1472,7 +1605,7 @@ window.__ModuleLoader__.load({
 						actx.on("slash/input-begin-command", (req) => shell.beginCommand(req.claim, req.span) ? true : void 0),
 						actx.on("slash/input-insert-reference", (req) => shell.insertReference(req.reference, req.span) ? true : void 0),
 						actx.on("slash/input-consume-token", (req) => shell.consumeToken(req.guard) ? true : void 0),
-						actx.on("slash/input-insert-text", (req) => shell.insertText(req.text, req.span) ? true : void 0)
+						actx.on("slash/input-insert-text", (req) => shell.insertText(req.text, req.span, req.continue === true) ? true : void 0)
 					];
 					return () => {
 						for (const off of offs) off();
@@ -1522,21 +1655,11 @@ window.__ModuleLoader__.load({
 			* Default sink: optimistic clear + prompt. The session is always a real
 			* host entity (materialized when its workspace was picked), so there is
 			* exactly one path; a failed first prompt is an ordinary prompt failure
-			* (error strip via promptError, draft restored only while untouched).
+			* (banner via promptError, draft restored only while untouched).
 			*/
-			sink(session, text, imageIds, mode) {
-				if (text === "" && imageIds.length === 0) return;
-				const shell = this.shells.get(session.sessionId);
-				shell?.commitSend(imageIds);
-				this.conversation().sendSession(session, text, imageIds, mode).catch(() => {
-					if (this.shells.get(session.sessionId) === shell) {
-						shell?.restoreImages(imageIds);
-						if (shell?.snapshot.draft === "") shell.setDraft(text);
-						return;
-					}
-					const conversation = this.rootCtx.get("conversation");
-					for (const id of imageIds) conversation?.releaseDraftImage(id);
-				});
+			sink(session, text, imageIds, mode, signal) {
+				if (text === "" && imageIds.length === 0) return Promise.resolve({ kind: "success" });
+				return this.conversation().sendSession(session, text, imageIds, mode, signal);
 			}
 			/**
 			* Steer every still-pending queued message into the running turn, in FIFO
@@ -2465,6 +2588,7 @@ window.__ModuleLoader__.load({
 		//#region lib/types/client/input/decorations.js
 		/** Token matcher: a trigger char at line start or after whitespace, then a word-ish name (never crosses \n). */
 		const TEXT_REF_RE = /(^|\s)([/@])([\w-]+)/g;
+		const FOLDER_REF_RE = /(^|\s)(@(?:"[^"\n]*\/|[^\s"]+\/))/g;
 		/**
 		* Scan the draft for plain-text reference tokens against the hot lexicons.
 		* Word-boundary discipline: the trigger must sit at the draft
@@ -2475,23 +2599,38 @@ window.__ModuleLoader__.load({
 		* @returns matched ranges in draft order.
 		*/
 		function scanTextRefs(draft, lexicon) {
-			if (lexicon.size === 0 || draft === "") return [];
+			if (draft === "") return [];
 			const out = [];
-			TEXT_REF_RE.lastIndex = 0;
-			let m;
-			while ((m = TEXT_REF_RE.exec(draft)) !== null) {
-				const trigger = m[2];
-				const name = m[3] ?? "";
-				if (lexicon.get(trigger)?.includes(name)) {
-					const start = m.index + (m[1]?.length ?? 0);
-					out.push({
-						start,
-						end: start + 1 + name.length,
-						trigger
-					});
+			if (lexicon.size > 0) {
+				TEXT_REF_RE.lastIndex = 0;
+				let m;
+				while ((m = TEXT_REF_RE.exec(draft)) !== null) {
+					const trigger = m[2];
+					const name = m[3] ?? "";
+					if (lexicon.get(trigger)?.includes(name)) {
+						const start = m.index + (m[1]?.length ?? 0);
+						out.push({
+							start,
+							end: start + 1 + name.length,
+							trigger
+						});
+					}
 				}
 			}
-			return out;
+			FOLDER_REF_RE.lastIndex = 0;
+			let folder;
+			while ((folder = FOLDER_REF_RE.exec(draft)) !== null) {
+				const token = folder[2] ?? "";
+				const start = folder.index + (folder[1]?.length ?? 0);
+				const end = start + token.length;
+				if (!out.some((range) => range.start < end && range.end > start)) out.push({
+					start,
+					end,
+					trigger: "@",
+					appearance: "folder"
+				});
+			}
+			return out.sort((left, right) => left.start - right.start);
 		}
 		/** The empty lexicon (default: zero text-ref decorations, old call sites unchanged). */
 		const EMPTY_LEXICON$1 = /* @__PURE__ */ new Map();
@@ -2511,7 +2650,10 @@ window.__ModuleLoader__.load({
 			const chips = occurrences.map((o) => ({
 				occurrenceId: o.occurrenceId,
 				offset: o.offset,
+				length: o.length,
+				text: draft.slice(o.offset, o.offset + o.length),
 				label: o.label,
+				...o.appearance === void 0 ? {} : { appearance: o.appearance },
 				invalid: o.invalid === true
 			}));
 			const hint = claimActive && claim.hint !== void 0 && draft.slice(claim.token.length).trim() === "" ? claim.hint : null;
@@ -2524,9 +2666,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region lib/types/client/image-labels.js
-		/** Bridges the `conversation` locale namespace to the zero-cordis attachment
-		* atoms' label props (`@deepseek-ai/dsh-client-ui-attachment` reads no
-		* application state; owners resolve every string). */
+		/** Attachment error and limit copy owned by the conversation input flow. */
 		/**
 		* Byte count as user-facing megabytes (`10MB`, `2.5MB`).
 		* @param bytes - the byte count.
@@ -2551,6 +2691,9 @@ window.__ModuleLoader__.load({
 				case "MODEL_DOES_NOT_SUPPORT_IMAGES": return t("image.modelUnsupported");
 				case "SUBAGENT_IMAGE_UNSUPPORTED": return t("image.subagentUnsupported");
 				case "IMAGE_TOO_MANY_PIXELS": return t("image.tooManyPixels");
+				case "IMAGE_DIMENSION_TOO_LARGE":
+					if (limits !== void 0) return t("image.dimensionTooLarge", { size: limits.maxImageDimension });
+					break;
 				case "INVALID_IMAGE":
 				case "IMAGE_TYPE_MISMATCH": return t("image.unsupportedType");
 				case "TOO_MANY_IMAGES":
@@ -2566,61 +2709,36 @@ window.__ModuleLoader__.load({
 			}
 			return t("image.sendFailed", { reason });
 		}
+		//#endregion
+		//#region lib/types/client/reference/ReferenceIcon.js
 		/**
-		* Resolve the original-image lightbox strings.
-		* @param t - the conversation-namespace translate.
-		* @returns the lightbox dialog and close-control labels.
+		* Render the icon that identifies one inline reference domain.
+		* @param props - Reference kind, optional size, and optional CSS class.
+		* @returns The corresponding current-color SVG glyph.
 		*/
-		function lightboxLabels(t) {
-			return {
-				dialog: t("image.preview"),
-				close: t("image.closePreview")
-			};
-		}
-		/**
-		* Resolve the chat-history image strings.
-		* @param t - the conversation-namespace translate.
-		* @returns the message-image labels including the forwarded lightbox strings.
-		*/
-		function messageImageLabels(t) {
-			return {
-				image: t("image.label"),
-				open: t("image.openOriginal"),
-				openNamed: (label) => t("image.openOriginalLabel", { label }),
-				loading: t("image.loading"),
-				loadFailed: t("image.loadFailed"),
-				lightbox: lightboxLabels(t)
-			};
-		}
-		/**
-		* Resolve the full-page drop overlay strings.
-		* @param t - the conversation-namespace translate.
-		* @param accepting - whether drops are currently accepted.
-		* @param limits - per-message limits for the desc line, when known.
-		* @returns the overlay title, with the limits desc while accepting.
-		*/
-		function dropOverlayLabels(t, accepting, limits) {
-			if (!accepting) return { title: t("image.dropBlocked") };
-			return {
-				title: t("image.dropTitle"),
-				desc: limits === void 0 ? void 0 : t("image.dropDesc", {
-					count: limits.count,
-					size: limits.size
-				})
-			};
-		}
-		/**
-		* Resolve the composer draft-image rail strings.
-		* @param t - the conversation-namespace translate.
-		* @returns the rail group, open-tooltip, and paging-arrow labels.
-		*/
-		function attachmentRailLabels(t) {
-			return {
-				group: t("image.pending"),
-				open: t("image.openOriginal"),
-				scrollLeft: t("image.scrollLeft"),
-				scrollRight: t("image.scrollRight")
-			};
+		function ReferenceIcon({ kind, size = 16, className }) {
+			switch (kind) {
+				case "session": return (0, react_jsx_runtime.jsx)("svg", {
+					width: size,
+					height: size,
+					className,
+					viewBox: "0 0 16 16",
+					fill: "none",
+					"aria-hidden": true,
+					children: (0, react_jsx_runtime.jsx)("path", {
+						d: "M8 0.597656C3.91296 0.597656 0.599716 3.91103 0.599609 7.99805C0.599609 9.13171 0.854567 10.2079 1.31152 11.1699L1.59277 11.7607L2.77441 11.1992L2.49414 10.6084L2.36035 10.3076C2.06865 9.59612 1.90723 8.81645 1.90723 7.99805C1.90733 4.63362 4.63554 1.90625 8 1.90625C11.3644 1.90635 14.0917 4.63368 14.0918 7.99805C14.0918 11.3625 11.3644 14.0907 8 14.0908C7.311 14.0908 6.80642 14.0414 6.35938 13.918C5.919 13.7963 5.50105 13.5929 5.00098 13.2441C4.26805 12.7329 3.21756 12.5526 2.35156 13.0996L2.33789 13.1084L2.32422 13.1182L1.74805 13.5234L2.18164 14.8184L3.05957 14.2002C3.37505 14.0068 3.84248 14.0319 4.25195 14.3174C4.84447 14.7307 5.39718 15.009 6.01172 15.1787C6.61963 15.3465 7.25579 15.3984 8 15.3984C12.087 15.3983 15.4004 12.0851 15.4004 7.99805C15.4003 3.9111 12.087 0.59776 8 0.597656ZM4.56836 8.50977V9.80371H8.12402V8.50977H4.56836ZM4.56836 7.30078H11.4619V6.00684H4.56836V7.30078Z",
+						fill: "currentColor"
+					})
+				});
+				case "file": return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBrowseOutline16, {
+					size,
+					className
+				});
+				case "folder": return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderClose16, {
+					size,
+					className
+				});
+			}
 		}
 		//#endregion
 		//#region lib/types/client/chat/message-chrome.js
@@ -2769,7 +2887,7 @@ window.__ModuleLoader__.load({
 			return metrics;
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/StatsLine.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/StatsLine.module.css.mjs
 		const css$20 = ".FJxK0a_root{text-align:center;max-width:var(--dsh-chat-content-width);box-sizing:border-box;width:100%;padding:4px calc(var(--dsh-composer-side-clearance) + 16px) 0px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;margin:0 auto;font-size:12px;line-height:20px;display:block;overflow:hidden}.FJxK0a_sep{color:var(--dsw-alias-separator-primary);margin:0 10px}";
 		const tagId$20 = "@deepseek-ai/dsh-client-ui-conversation/StatsLine.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$20) + "]") === null) {
@@ -2780,8 +2898,8 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var StatsLine_module_css_default = {
-			"sep": "FJxK0a_sep",
-			"root": "FJxK0a_root"
+			"root": "FJxK0a_root",
+			"sep": "FJxK0a_sep"
 		};
 		//#endregion
 		//#region lib/types/client/chat/StatsLine.js
@@ -2858,14 +2976,52 @@ window.__ModuleLoader__.load({
 			const whole = Math.round(s);
 			return `${Math.floor(whole / 60)}m${whole % 60}s`;
 		}
+		/** Round a cache-read ratio to an integer percentage, with positive ties rounded up. */
+		function roundedIntegerPercent(cacheReadTokens, denominator) {
+			const denominatorQuotient = Math.floor(denominator / 200);
+			const denominatorRemainder = denominator % 200;
+			let lower = 0;
+			let upper = 100;
+			while (lower < upper) {
+				const candidate = Math.floor((lower + upper + 1) / 2);
+				const factor = candidate * 2 - 1;
+				if (cacheReadTokens >= factor * denominatorQuotient + Math.ceil(factor * denominatorRemainder / 200)) lower = candidate;
+				else upper = candidate - 1;
+			}
+			return lower;
+		}
 		/**
-		* Cache-hit share of prompt-side input over the whole durable log.
+		* Display-ready cache-hit share of prompt-side input over the whole durable log.
 		* @param usage - the session's token-usage projection value.
-		* @returns rounded integer percent, or null when no input was billed.
+		* @returns integer text when integer rounding stays below 100, otherwise the
+		* minimum decimal precision that still rounds below 100; a full hit returns
+		* 100, and no billed input returns null.
 		*/
 		function cacheHitPercent(usage) {
 			const denominator = billedInputTokens(usage);
-			return denominator === 0 ? null : Math.round(usage.cacheReadTokens / denominator * 100);
+			if (denominator === 0) return null;
+			const missedInputTokens = usage.uncachedInputTokens + usage.cacheWriteTokens;
+			if (missedInputTokens === 0) return "100";
+			const integerPercent = roundedIntegerPercent(usage.cacheReadTokens, denominator);
+			if (integerPercent < 100) return String(integerPercent);
+			let decimalPlaces = 1;
+			let scaledDoubleGap = missedInputTokens * 200;
+			const denominatorTens = Math.floor(denominator / 10);
+			while (scaledDoubleGap <= denominatorTens) {
+				scaledDoubleGap *= 10;
+				decimalPlaces += 1;
+			}
+			const denominatorOnes = denominator % 10;
+			let roundedLoss = 5;
+			for (let loss = 1; loss < 5; loss += 1) {
+				const factor = loss * 2 + 1;
+				const threshold = factor * denominatorTens + Math.floor(factor * denominatorOnes / 10);
+				if (scaledDoubleGap <= threshold) {
+					roundedLoss = loss;
+					break;
+				}
+			}
+			return `99.${"9".repeat(decimalPlaces - 1)}${10 - roundedLoss}`;
 		}
 		/**
 		* Sum the three disjoint prompt-side billing buckets.
@@ -2959,7 +3115,7 @@ window.__ModuleLoader__.load({
 			});
 		});
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/ContextMeter.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/ContextMeter.module.css.mjs
 		const css$19 = ".JObwrW_root{display:inline-flex;position:relative}.JObwrW_trigger{width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.JObwrW_trigger:hover{background:var(--dsw-alias-interactive-bg-hover)}.JObwrW_track{fill:none;stroke:var(--dsw-alias-border-l3);stroke-width:2px}.JObwrW_fill{fill:none;stroke:var(--dsw-alias-label-tertiary);stroke-width:2px;stroke-linecap:round}.JObwrW_panel{z-index:100;box-sizing:border-box;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu);width:264px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-secondary);cursor:default;border-radius:12px;padding:12px;font-size:12px;line-height:20px;position:absolute;bottom:calc(100% + 8px);right:0}.JObwrW_header{align-items:center;gap:6px;display:flex}.JObwrW_figures{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);margin-left:auto;font-weight:500}.JObwrW_percent{color:var(--dsw-alias-label-primary);font-weight:500}.JObwrW_headline{color:var(--dsw-alias-label-tertiary)}.JObwrW_headline:empty{display:none}.JObwrW_bar{background:var(--dsw-alias-interactive-bg-hover);border-radius:999px;gap:1px;height:4px;margin:10px 0 12px;display:flex;overflow:hidden}.JObwrW_segment{background:var(--meter-tint,var(--dsw-alias-label-tertiary));border-radius:1px;flex:none;min-width:2px;height:100%}.JObwrW_swatch{background:var(--meter-tint);vertical-align:baseline;border-radius:2px;width:8px;height:8px;margin-right:6px;display:inline-block}.JObwrW_colorSystem{--meter-tint:var(--dsw-static-neutral-bluish-400)}.JObwrW_colorTools{--meter-tint:#a78bfa}.JObwrW_colorMessages{--meter-tint:var(--dsw-static-blue-450)}.JObwrW_rows{margin:6px 0 0}.JObwrW_row{justify-content:space-between;align-items:center;gap:12px;padding:2px 0;display:flex}.JObwrW_row dt{color:var(--dsw-alias-label-secondary)}.JObwrW_row dd{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);margin:0}";
 		const tagId$19 = "@deepseek-ai/dsh-client-ui-conversation/ContextMeter.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$19) + "]") === null) {
@@ -2970,23 +3126,23 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ContextMeter_module_css_default = {
-			"trigger": "JObwrW_trigger",
-			"track": "JObwrW_track",
-			"row": "JObwrW_row",
-			"header": "JObwrW_header",
-			"percent": "JObwrW_percent",
-			"headline": "JObwrW_headline",
 			"bar": "JObwrW_bar",
-			"swatch": "JObwrW_swatch",
+			"colorMessages": "JObwrW_colorMessages",
+			"colorSystem": "JObwrW_colorSystem",
+			"colorTools": "JObwrW_colorTools",
+			"figures": "JObwrW_figures",
+			"fill": "JObwrW_fill",
+			"header": "JObwrW_header",
+			"headline": "JObwrW_headline",
+			"panel": "JObwrW_panel",
+			"percent": "JObwrW_percent",
+			"root": "JObwrW_root",
+			"row": "JObwrW_row",
 			"rows": "JObwrW_rows",
 			"segment": "JObwrW_segment",
-			"panel": "JObwrW_panel",
-			"fill": "JObwrW_fill",
-			"colorMessages": "JObwrW_colorMessages",
-			"colorTools": "JObwrW_colorTools",
-			"colorSystem": "JObwrW_colorSystem",
-			"figures": "JObwrW_figures",
-			"root": "JObwrW_root"
+			"swatch": "JObwrW_swatch",
+			"track": "JObwrW_track",
+			"trigger": "JObwrW_trigger"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/ContextMeter.js
@@ -3147,7 +3303,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/PermissionSelect.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/PermissionSelect.module.css.mjs
 		const css$18 = ".Sh0Q9G_trigger{min-width:0;max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:24px;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font-size:13px;font-weight:500;line-height:20px;display:inline-flex}.Sh0Q9G_trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.Sh0Q9G_trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}.Sh0Q9G_trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}.Sh0Q9G_triggerIcon{flex:none;display:inline-flex}.Sh0Q9G_triggerIcon svg{width:14px;height:14px}.Sh0Q9G_triggerLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.Sh0Q9G_chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s;display:inline-flex}@container (width<=460px){.Sh0Q9G_trigger:has(.Sh0Q9G_triggerIcon) .Sh0Q9G_triggerLabel{display:none}}.Sh0Q9G_chevronOpen{transform:rotate(180deg)}";
 		const tagId$18 = "@deepseek-ai/dsh-client-ui-conversation/PermissionSelect.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$18) + "]") === null) {
@@ -3158,11 +3314,11 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var PermissionSelect_module_css_default = {
-			"chevronOpen": "Sh0Q9G_chevronOpen",
 			"chevron": "Sh0Q9G_chevron",
-			"triggerLabel": "Sh0Q9G_triggerLabel",
+			"chevronOpen": "Sh0Q9G_chevronOpen",
+			"trigger": "Sh0Q9G_trigger",
 			"triggerIcon": "Sh0Q9G_triggerIcon",
-			"trigger": "Sh0Q9G_trigger"
+			"triggerLabel": "Sh0Q9G_triggerLabel"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/PermissionSelect.js
@@ -3355,8 +3511,39 @@ window.__ModuleLoader__.load({
 			})] });
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/InputBar.module.css.mjs
-		const css$17 = "@font-face{font-family:DshChipCell;src:url(data:font/ttf;base64,AAEAAAAKAIAAAwAgT1MvMkT8SmIAAAEoAAAAYGNtYXAADQBPAAABkAAAADRnbHlmAAAAAAAAAcwAAAABaGVhZCwtPGoAAACsAAAANmhoZWEDIg7bAAAA5AAAACRobXR4EZQAAAAAAYgAAAAIbG9jYQAAAAAAAAHEAAAABm1heHAAAwACAAABCAAAACBuYW1lvljk2gAAAdAAAABscG9zdNNweNQAAAI8AAAALQABAAAAAQAAdia1tV8PPPUAAwPoAAAAAOaLfcUAAAAA5ot9xQAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAA+gAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwjKAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAPz8/PwAA//z//AMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAD6AAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAD//P//AAD//P//AAUAAQAAAAAAAAAAAAAAAAAAAAAAAAAEADYAAQAAAAAAAQALAAAAAQAAAAAAAgAHAAsAAwABBAkAAQAWABIAAwABBAkAAgAOAChEc2hDaGlwQ2VsbFJlZ3VsYXIARABzAGgAQwBoAGkAcABDAGUAbABsAFIAZQBnAHUAbABhAHIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAABAgZvYmpyZXAAAAA=)format(\"truetype\")}.uV2eYG_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.uV2eYG_hero{padding:0 var(--dsh-composer-side-clearance)}.uV2eYG_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.uV2eYG_noticeError{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.uV2eYG_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.uV2eYG_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.uV2eYG_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.uV2eYG_cardWorkspaceTrigger :disabled{pointer-events:none}.uV2eYG_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.uV2eYG_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.uV2eYG_attachments{min-width:0;padding:4px 12px 0}.uV2eYG_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.uV2eYG_scroll{max-height:var(--dsh-composer-text-max-height);overflow-y:auto}.uV2eYG_grow{position:relative}.uV2eYG_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.uV2eYG_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.uV2eYG_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.uV2eYG_hint{color:var(--dsw-alias-label-caption)}.uV2eYG_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate uV2eYG_input-pending}@keyframes uV2eYG_input-pending{0%{opacity:.35}to{opacity:1}}.uV2eYG_input{resize:none;color:#0000;width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.uV2eYG_input,.uV2eYG_mirror,.uV2eYG_backdrop{box-sizing:border-box;font-family:\"DshChipCell\", var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.uV2eYG_input::placeholder{color:var(--dsw-alias-label-caption);user-select:none}.uV2eYG_input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.uV2eYG_input[aria-haspopup=menu]{cursor:pointer}.uV2eYG_mirror{visibility:hidden;pointer-events:none}.uV2eYG_hero .uV2eYG_mirror{min-height:52px}.uV2eYG_row{justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.uV2eYG_tools,.uV2eYG_modes,.uV2eYG_trailing{align-items:center;min-width:0;display:flex}.uV2eYG_tools{gap:16px}.uV2eYG_modes{gap:12px}.uV2eYG_trailing{flex:none;gap:12px}.uV2eYG_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.uV2eYG_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.uV2eYG_add:disabled{opacity:.5;cursor:default}.uV2eYG_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.uV2eYG_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.uV2eYG_select:disabled{opacity:.5;cursor:default}.uV2eYG_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.uV2eYG_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.uV2eYG_primary:disabled{opacity:.4;cursor:default}.uV2eYG_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.uV2eYG_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.uV2eYG_textRef:after{display:none}.uV2eYG_chip{background:#6187d838;border-radius:6px;position:relative}.uV2eYG_chip:before{content:\"￼\";color:#0000}.uV2eYG_chipLabel{width:calc(138.889% - 10px);color:var(--dsw-alias-label-primary);white-space:nowrap;justify-content:center;align-items:center;display:flex;position:absolute;top:50%;left:50%;overflow:hidden;transform:translate(-50%,-50%)scale(.72)}.uV2eYG_chipInvalid{opacity:.7;background:#d8616133;text-decoration:line-through}";
+		//#region lib/types/client/skeleton/safari.js
+		/** Safari-specific textarea layout recovery for the conversation composer. */
+		const ALTERNATE_IOS_BROWSER = /\b(?:CriOS|FxiOS|EdgiOS|OPiOS|OPT|DuckDuckGo|Brave)(?:\/|\b)/;
+		/**
+		* Detect Safari's `Version/... Safari/...` form while excluding known alternate iOS browser tokens.
+		* @param identity - Browser user-agent and vendor values.
+		* @returns Whether the identity should use the Safari-specific recovery.
+		*/
+		function isSafariBrowser(identity) {
+			return identity.vendor === "Apple Computer, Inc." && /\bVersion\/[\d.]+.*\bSafari\/[\d.]+/.test(identity.userAgent) && !ALTERNATE_IOS_BROWSER.test(identity.userAgent);
+		}
+		/**
+		* Repair Safari's stale native textarea layout and the scrollport auto height it can contaminate.
+		* @param input - Composer textarea whose own scrollable overflow must stay zero.
+		*/
+		function repairSafariTextareaLayout(input) {
+			if (input === null || input.scrollHeight <= input.clientHeight) return;
+			const scrollport = input.closest("[data-input-scroll]");
+			if (scrollport === null) return;
+			const inputHeight = input.style.height;
+			input.style.height = `${String(input.clientHeight + 1)}px`;
+			input.offsetHeight;
+			input.style.height = inputHeight;
+			input.offsetHeight;
+			const scrollportHeight = scrollport.style.height;
+			scrollport.style.height = `${String(scrollport.clientHeight + 1)}px`;
+			scrollport.offsetHeight;
+			scrollport.style.height = scrollportHeight;
+			scrollport.offsetHeight;
+		}
+		//#endregion
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/InputBar.module.css.mjs
+		const css$17 = ".uV2eYG_root{padding:0 var(--dsh-composer-side-clearance) 8px;flex-direction:column;align-items:center;display:flex}.uV2eYG_hero{padding:0 var(--dsh-composer-side-clearance)}.uV2eYG_notice{width:100%;max-width:var(--dsh-composer-card-max-width);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);border-radius:8px;margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.uV2eYG_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:22px;flex-direction:column;gap:12px;padding-top:10px;font-size:16px;line-height:24px;display:flex;position:relative}.uV2eYG_cardWorkspaceTrigger{cursor:pointer;border-color:#0000}.uV2eYG_cardWorkspaceTrigger:after{content:\"\";background:var(--dsw-alias-border-l4);pointer-events:none;border-radius:22px;transition:background-color .1s;position:absolute;inset:-1px;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\");mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E\")}.uV2eYG_cardWorkspaceTrigger :disabled{pointer-events:none}.uV2eYG_cardWorkspaceTrigger:hover:after{background:var(--dsw-alias-state-business-primary)}.uV2eYG_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.uV2eYG_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.uV2eYG_scroll{max-height:var(--dsh-composer-text-max-height);overflow-y:auto}.uV2eYG_grow{position:relative}.uV2eYG_backdrop{color:var(--dsw-alias-label-primary);pointer-events:none;position:absolute;inset:0;overflow:hidden}.uV2eYG_backdropDisabled,.uV2eYG_backdropDisabled :is(.uV2eYG_hlToken,.uV2eYG_hint,.uV2eYG_textRef,.uV2eYG_chip,.uV2eYG_chipInvalid){color:var(--dsw-alias-label-tertiary)}.uV2eYG_hlToken{color:var(--dsw-alias-state-warn-label);background-color:#0000}.uV2eYG_hlSegment{color:#0000;background-color:#0000;border-radius:4px}.uV2eYG_hint{color:var(--dsw-alias-label-caption)}.uV2eYG_pending{background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate uV2eYG_input-pending}@keyframes uV2eYG_input-pending{0%{opacity:.35}to{opacity:1}}.uV2eYG_input{resize:none;color:#0000;-webkit-text-fill-color:transparent;width:100%;height:100%;caret-color:var(--dsw-alias-state-business-primary);background:0 0;border:none;outline:none;position:absolute;inset:0;overflow:hidden}.uV2eYG_input,.uV2eYG_mirror,.uV2eYG_backdrop{box-sizing:border-box;font-family:var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;padding:4px 12px 0 16px}.uV2eYG_input::placeholder{color:var(--dsw-alias-label-caption);-webkit-text-fill-color:var(--dsw-alias-label-caption);user-select:none}.uV2eYG_input:disabled{color:#0000;-webkit-text-fill-color:transparent;cursor:not-allowed}.uV2eYG_input[aria-haspopup=menu]{cursor:pointer}.uV2eYG_mirror{visibility:hidden;pointer-events:none}.uV2eYG_hero .uV2eYG_mirror{min-height:52px}.uV2eYG_row{flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.uV2eYG_tools,.uV2eYG_modes,.uV2eYG_trailing{align-items:center;min-width:0;display:flex}.uV2eYG_tools{gap:16px}.uV2eYG_modes{gap:12px}.uV2eYG_trailing{flex:none;gap:12px;margin-left:auto}.uV2eYG_add{background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.uV2eYG_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.uV2eYG_add:disabled{opacity:.5;cursor:default}.uV2eYG_select{max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;border-radius:8px;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.uV2eYG_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.uV2eYG_select:disabled{opacity:.5;cursor:default}.uV2eYG_primary{background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.uV2eYG_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.uV2eYG_primary:disabled{opacity:.4;cursor:default}.uV2eYG_retry{color:inherit;cursor:pointer;background:0 0;border:1px solid;border-radius:4px;margin-left:8px;padding:1px 8px;font-size:12px}.uV2eYG_textRef{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background-color:#0000}.uV2eYG_textRef:after{display:none}.uV2eYG_textRefTrigger{position:relative}.uV2eYG_textRefTriggerGlyph{color:#0000}.uV2eYG_textRefIcon{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}.uV2eYG_chip{color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background:0 0;position:relative}.uV2eYG_chipTrigger{position:relative}.uV2eYG_chipTriggerGlyph{color:#0000}.uV2eYG_chipIcon{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}.uV2eYG_chipInvalid{opacity:.7;color:var(--dsw-alias-state-error-primary);text-decoration:line-through}";
 		const tagId$17 = "@deepseek-ai/dsh-client-ui-conversation/InputBar.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$17) + "]") === null) {
 			const tag = document.createElement("style");
@@ -3366,37 +3553,41 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var InputBar_module_css_default = {
-			"overlayAnchor": "uV2eYG_overlayAnchor",
-			"chip": "uV2eYG_chip",
 			"accessory": "uV2eYG_accessory",
-			"mirror": "uV2eYG_mirror",
+			"add": "uV2eYG_add",
+			"backdrop": "uV2eYG_backdrop",
+			"backdropDisabled": "uV2eYG_backdropDisabled",
 			"card": "uV2eYG_card",
+			"cardWorkspaceTrigger": "uV2eYG_cardWorkspaceTrigger",
+			"chip": "uV2eYG_chip",
+			"chipIcon": "uV2eYG_chipIcon",
+			"chipInvalid": "uV2eYG_chipInvalid",
+			"chipTrigger": "uV2eYG_chipTrigger",
+			"chipTriggerGlyph": "uV2eYG_chipTriggerGlyph",
 			"grow": "uV2eYG_grow",
-			"root": "uV2eYG_root",
+			"hero": "uV2eYG_hero",
+			"hint": "uV2eYG_hint",
+			"hlSegment": "uV2eYG_hlSegment",
 			"hlToken": "uV2eYG_hlToken",
 			"input": "uV2eYG_input",
-			"modes": "uV2eYG_modes",
-			"trailing": "uV2eYG_trailing",
-			"primary": "uV2eYG_primary",
-			"textRef": "uV2eYG_textRef",
-			"chipLabel": "uV2eYG_chipLabel",
-			"notice": "uV2eYG_notice",
-			"select": "uV2eYG_select",
-			"hero": "uV2eYG_hero",
-			"hlSegment": "uV2eYG_hlSegment",
-			"add": "uV2eYG_add",
-			"attachments": "uV2eYG_attachments",
-			"cardWorkspaceTrigger": "uV2eYG_cardWorkspaceTrigger",
-			"tools": "uV2eYG_tools",
-			"scroll": "uV2eYG_scroll",
-			"noticeError": "uV2eYG_noticeError",
-			"hint": "uV2eYG_hint",
-			"row": "uV2eYG_row",
-			"chipInvalid": "uV2eYG_chipInvalid",
-			"pending": "uV2eYG_pending",
-			"backdrop": "uV2eYG_backdrop",
 			"input-pending": "uV2eYG_input-pending",
-			"retry": "uV2eYG_retry"
+			"mirror": "uV2eYG_mirror",
+			"modes": "uV2eYG_modes",
+			"notice": "uV2eYG_notice",
+			"overlayAnchor": "uV2eYG_overlayAnchor",
+			"pending": "uV2eYG_pending",
+			"primary": "uV2eYG_primary",
+			"retry": "uV2eYG_retry",
+			"root": "uV2eYG_root",
+			"row": "uV2eYG_row",
+			"scroll": "uV2eYG_scroll",
+			"select": "uV2eYG_select",
+			"textRef": "uV2eYG_textRef",
+			"textRefIcon": "uV2eYG_textRefIcon",
+			"textRefTrigger": "uV2eYG_textRefTrigger",
+			"textRefTriggerGlyph": "uV2eYG_textRefTriggerGlyph",
+			"tools": "uV2eYG_tools",
+			"trailing": "uV2eYG_trailing"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/InputBar.js
@@ -3414,6 +3605,41 @@ window.__ModuleLoader__.load({
 			textRefs: [],
 			hint: null
 		};
+		/**
+		* Resolve one edit's range from the record taken before it applied.
+		* A selection the edit replaces is the range outright. A caret delete replaces
+		* nothing and reports the bare caret, so the removed span is whatever the draft
+		* lost, on the side `inputType` names — measured, because one caret gesture can
+		* remove a multi-unit grapheme, a word, or a line.
+		* @param pending - record taken at `beforeinput`, null when none was seen.
+		* @param prevLength - length of the draft the edit applied to.
+		* @param nextLength - length of the resulting draft.
+		* @returns the exact range, or undefined when the record cannot describe this
+		* edit and the machine's diff scan has to recover it.
+		*/
+		function editRangeOf(pending, prevLength, nextLength) {
+			if (pending === null || pending.draftLength !== prevLength) return void 0;
+			const { start, end, inputType } = pending;
+			if (start > end || end > prevLength) return void 0;
+			const insertedLength = nextLength - prevLength + (end - start);
+			if (insertedLength >= 0) return {
+				start,
+				end,
+				insertedLength
+			};
+			if (start !== end) return void 0;
+			const removed = prevLength - nextLength;
+			if (inputType.endsWith("Backward")) return removed <= start ? {
+				start: start - removed,
+				end: start,
+				insertedLength: 0
+			} : void 0;
+			if (inputType.endsWith("Forward")) return start + removed <= prevLength ? {
+				start,
+				end: start + removed,
+				insertedLength: 0
+			} : void 0;
+		}
 		function InputBar({ useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages, resolveSubmitMode, toggleCommandMenu, stop, command, t, renderSlot, useNotices, useLexicon, useMenuLauncher, useProjection, sessionId, variant, disabled: inert = false, blocked, workspacePickerOpen = false, onRequestWorkspace, placeholder, accessory, overlay, leftItems, rightItems, footer }) {
 			const input = useInput((s) => s);
 			const notice = useNotices((s) => s);
@@ -3429,8 +3655,6 @@ window.__ModuleLoader__.load({
 			const draft = input?.draft ?? "";
 			const attachments = (0, react.useMemo)(() => input === void 0 || draftImages === void 0 ? [] : draftImages(input.imageIds), [draftImages, input?.imageIds]);
 			const empty = draft.trim() === "" && attachments.length === 0;
-			const [preview, setPreview] = (0, react.useState)(null);
-			const [dragActive, setDragActive] = (0, react.useState)(false);
 			const [toast, setToast] = (0, react.useState)(null);
 			const toastSeq = (0, react.useRef)(0);
 			const showToast = (0, react.useCallback)((text) => {
@@ -3462,11 +3686,15 @@ window.__ModuleLoader__.load({
 				t,
 				imageLimits
 			]);
+			(0, react.useEffect)(() => {
+				if (notice?.level === "error") showToast(notice.text);
+			}, [notice, showToast]);
 			const inputRef = (0, react.useRef)(null);
 			const cardRef = (0, react.useRef)(null);
-			const dragDepthRef = (0, react.useRef)(0);
 			const scrollRef = (0, react.useRef)(null);
 			const mirrorRef = (0, react.useRef)(null);
+			const safari = (0, react.useMemo)(() => isSafariBrowser(navigator), []);
+			const safariNativeShrinkRef = (0, react.useRef)(false);
 			const composingRef = (0, react.useRef)(false);
 			const onCompositionStart = () => {
 				composingRef.current = true;
@@ -3494,9 +3722,11 @@ window.__ModuleLoader__.load({
 				input?.imageIds,
 				inputActions
 			]);
-			(0, react.useEffect)(() => {
-				if (preview !== null && !attachments.some((attachment) => attachment.id === preview.id)) setPreview(null);
-			}, [attachments, preview]);
+			(0, react.useLayoutEffect)(() => {
+				const nativeShrink = safariNativeShrinkRef.current;
+				safariNativeShrinkRef.current = false;
+				if (safari && nativeShrink) repairSafariTextareaLayout(inputRef.current);
+			}, [draft, safari]);
 			const revealCaret = (caret) => {
 				const scrollEl = scrollRef.current;
 				const mirrorEl = mirrorRef.current;
@@ -3552,6 +3782,32 @@ window.__ModuleLoader__.load({
 					el.removeEventListener("wheel", onWheel);
 				};
 			}, []);
+			const selectionOf = (el) => ({
+				start: el.selectionStart ?? 0,
+				end: el.selectionEnd ?? el.selectionStart ?? 0
+			});
+			const pendingEditRef = (0, react.useRef)(null);
+			(0, react.useEffect)(() => {
+				const el = inputRef.current;
+				if (el === null) return;
+				const onBeforeInput = (e) => {
+					if (!e.inputType.startsWith("insert") && !e.inputType.startsWith("delete")) {
+						pendingEditRef.current = null;
+						return;
+					}
+					const { start, end } = selectionOf(el);
+					pendingEditRef.current = {
+						start,
+						end,
+						draftLength: el.value.length,
+						inputType: e.inputType
+					};
+				};
+				el.addEventListener("beforeinput", onBeforeInput);
+				return () => {
+					el.removeEventListener("beforeinput", onBeforeInput);
+				};
+			}, []);
 			const onKeyDown = (e) => {
 				if (workspaceTrigger) {
 					if (e.key === "Enter" || e.key === " ") {
@@ -3560,9 +3816,28 @@ window.__ModuleLoader__.load({
 					}
 					return;
 				}
-				if (keyboard === void 0 || inputActions === void 0) return;
+				if (input === void 0 || keyboard === void 0 || inputActions === void 0) return;
 				if (e.key === "Enter" && e.shiftKey) return;
 				const composing = composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229;
+				if (!composing && !machineBusy && !locked && (e.key === "Backspace" || e.key === "Delete")) {
+					const selection = selectionOf(e.currentTarget);
+					if (selection.start === selection.end) {
+						const occurrence = input.occurrences.find((o) => e.key === "Backspace" ? o.offset + o.length === selection.start : o.offset === selection.start);
+						if (occurrence !== void 0) {
+							e.preventDefault();
+							const start = occurrence.offset;
+							const end = occurrence.offset + occurrence.length;
+							keyboard.setDraft(draft.slice(0, start) + draft.slice(end), {
+								start,
+								end,
+								insertedLength: 0
+							});
+							restoreCaret(e.currentTarget, start);
+							keyboard.track(keyboard.snapshot.draft, start);
+							return;
+						}
+					}
+				}
 				if (e.key === "ArrowUp" || e.key === "ArrowDown") {
 					if (keyboard.arbitrate(e.key === "ArrowUp" ? "up" : "down", composing) === "consumed") e.preventDefault();
 					return;
@@ -3604,37 +3879,37 @@ window.__ModuleLoader__.load({
 				if (keyboard === void 0 || locked) return;
 				if (machineBusy) return;
 				const next = e.target.value;
-				keyboard.setDraft(next);
+				const pending = pendingEditRef.current;
+				pendingEditRef.current = null;
+				safariNativeShrinkRef.current = safari && next.length < draft.length;
+				keyboard.setDraft(next, editRangeOf(pending, draft.length, next.length));
 				keyboard.track(next, e.target.selectionStart ?? next.length);
 			};
-			const selectionOf = (el) => ({
-				start: el.selectionStart ?? 0,
-				end: el.selectionEnd ?? el.selectionStart ?? 0
-			});
 			const onCopyOrCut = (e, cut) => {
 				if (input === void 0 || keyboard === void 0) return;
 				const el = e.currentTarget;
 				const { start, end } = selectionOf(el);
 				if (start === end) return;
-				draft.slice(start, end);
-				const touched = input.occurrences.filter((o) => o.offset >= start && o.offset < end);
+				const touched = input.occurrences.filter((o) => o.offset < end && o.offset + o.length > start);
 				if (touched.length === 0 && !cut) return;
 				e.preventDefault();
+				const copyStart = touched.reduce((value, o) => Math.min(value, o.offset), start);
+				const copyEnd = touched.reduce((value, o) => Math.max(value, o.offset + o.length), end);
 				let text = "";
-				let cursor = start;
+				let cursor = copyStart;
 				for (const o of touched) {
 					text += draft.slice(cursor, o.offset) + o.clipboardText;
-					cursor = o.offset + 1;
+					cursor = o.offset + o.length;
 				}
-				text += draft.slice(cursor, end);
+				text += draft.slice(cursor, copyEnd);
 				e.clipboardData.setData("text/plain", text);
 				if (cut && !machineBusy && !locked) {
-					keyboard.setDraft(draft.slice(0, start) + draft.slice(end), {
-						start,
-						end,
+					keyboard.setDraft(draft.slice(0, copyStart) + draft.slice(copyEnd), {
+						start: copyStart,
+						end: copyEnd,
 						insertedLength: 0
 					});
-					restoreCaret(el, start);
+					restoreCaret(el, copyStart);
 				}
 			};
 			const onPaste = (e) => {
@@ -3681,62 +3956,6 @@ window.__ModuleLoader__.load({
 				t
 			]);
 			const canAcceptDrop = !locked && !machineBusy && addImages !== void 0;
-			(0, react.useEffect)(() => {
-				const hasFiles = (event) => event.dataTransfer?.types.includes("Files") ?? false;
-				const reset = () => {
-					dragDepthRef.current = 0;
-					setDragActive(false);
-				};
-				const onDragEnter = (event) => {
-					if (!hasFiles(event)) return;
-					event.preventDefault();
-					dragDepthRef.current += 1;
-					setDragActive(true);
-				};
-				const onDragOver = (event) => {
-					if (!hasFiles(event) || event.dataTransfer === null) return;
-					event.preventDefault();
-					event.dataTransfer.dropEffect = canAcceptDrop ? "copy" : "none";
-				};
-				const onDragLeave = (event) => {
-					if (!hasFiles(event)) return;
-					dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-					if (dragDepthRef.current === 0) setDragActive(false);
-					const leavingViewport = event.clientX <= 0 || event.clientY <= 0 || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight;
-					if ((event.target === document.documentElement || event.target === document.body) && leavingViewport) reset();
-				};
-				const onDrop = (event) => {
-					if (!hasFiles(event)) return;
-					event.preventDefault();
-					reset();
-					if (!canAcceptDrop) return;
-					intakeImages([...event.dataTransfer?.files ?? []]);
-				};
-				document.addEventListener("dragenter", onDragEnter);
-				document.addEventListener("dragover", onDragOver);
-				document.addEventListener("dragleave", onDragLeave);
-				document.addEventListener("drop", onDrop);
-				window.addEventListener("dragend", reset);
-				return () => {
-					document.removeEventListener("dragenter", onDragEnter);
-					document.removeEventListener("dragover", onDragOver);
-					document.removeEventListener("dragleave", onDragLeave);
-					document.removeEventListener("drop", onDrop);
-					window.removeEventListener("dragend", reset);
-				};
-			}, [canAcceptDrop, intakeImages]);
-			const closePreview = (0, react.useCallback)(() => {
-				setPreview(null);
-			}, []);
-			const railItems = (0, react.useMemo)(() => attachments.map((attachment) => ({
-				id: attachment.id,
-				previewUrl: attachment.previewUrl,
-				isImage: attachment.isImage === true,
-				fileName: attachment.file.name || t("image.pending"),
-				alt: attachment.file.name || t("image.pending"),
-				removeLabel: t("image.remove", { name: attachment.file.name }),
-				attachment
-			})), [attachments, t]);
 			const onSelect = (e) => {
 				if (keyboard !== void 0 && keyboard.snapshot.paste !== void 0) keyboard.invalidatePaste();
 			};
@@ -3786,34 +4005,54 @@ window.__ModuleLoader__.load({
 					at: chip.offset,
 					kind: "chip",
 					chip
-				})), ...deco.textRefs.map((ref) => ({
+				})), ...deco.textRefs.map((ref, ordinal) => ({
 					at: ref.start,
 					kind: "text-ref",
-					ref
+					ref,
+					ordinal
 				}))].sort((a, b) => a.at - b.at);
 				for (const b of boundaries) {
 					if (b.at < cursor) continue;
 					pushPlain(b.at);
 					if (b.kind === "chip") {
 						const chip = b.chip;
-						backdrop.push((0, react_jsx_runtime.jsx)("span", {
+						backdrop.push((0, react_jsx_runtime.jsxs)("span", {
 							className: clsx(InputBar_module_css_default.chip, chip.invalid && InputBar_module_css_default.chipInvalid),
 							"data-decoration": "chip",
+							"data-reference-appearance": chip.appearance,
 							"data-occurrence": chip.occurrenceId,
 							"data-invalid": chip.invalid || void 0,
 							title: chip.label,
-							children: (0, react_jsx_runtime.jsx)("span", {
-								className: InputBar_module_css_default.chipLabel,
-								children: chip.label
-							})
+							children: [chip.appearance === void 0 ? chip.text[0] : (0, react_jsx_runtime.jsxs)("span", {
+								className: InputBar_module_css_default.chipTrigger,
+								children: [(0, react_jsx_runtime.jsx)("span", {
+									className: InputBar_module_css_default.chipTriggerGlyph,
+									children: chip.text[0]
+								}), (0, react_jsx_runtime.jsx)(ReferenceIcon, {
+									kind: chip.appearance,
+									size: 16,
+									className: InputBar_module_css_default.chipIcon
+								})]
+							}), (0, react_jsx_runtime.jsx)("span", { children: chip.text.slice(1) })]
 						}, `chip-${chip.occurrenceId}`));
-						cursor = chip.offset + 1;
+						cursor = chip.offset + chip.length;
 					} else {
+						const text = draft.slice(b.ref.start, b.ref.end);
 						backdrop.push((0, react_jsx_runtime.jsx)("mark", {
 							className: InputBar_module_css_default.textRef,
 							"data-decoration": "text-ref",
-							children: draft.slice(b.ref.start, b.ref.end)
-						}, `ref-${b.ref.start}`));
+							children: b.ref.appearance === "folder" ? (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsxs)("span", {
+								className: InputBar_module_css_default.textRefTrigger,
+								children: [(0, react_jsx_runtime.jsx)("span", {
+									className: InputBar_module_css_default.textRefTriggerGlyph,
+									children: text[0]
+								}), (0, react_jsx_runtime.jsx)(ReferenceIcon, {
+									kind: "folder",
+									size: 16,
+									className: InputBar_module_css_default.textRefIcon
+								})]
+							}), text.slice(1)] }) : text
+						}, `ref-${b.ordinal}`));
 						cursor = b.ref.end;
 					}
 				}
@@ -3833,21 +4072,14 @@ window.__ModuleLoader__.load({
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: clsx(InputBar_module_css_default.root, variant === "hero" && InputBar_module_css_default.hero),
 				children: [
-					dragActive && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.DropOverlay, {
-						disabled: !canAcceptDrop,
-						labels: dropOverlayLabels(t, canAcceptDrop, imageLimits === void 0 ? void 0 : {
-							count: imageLimits.maxImagesPerMessage,
-							size: imageSizeText(imageLimits.maxImageBytes)
-						})
-					}),
 					toast !== null && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Toast, {
 						text: toast.text,
 						icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconWarningOutline16, {}),
 						anchor: cardRef.current,
 						onDone: dismissToast
 					}, toast.seq),
-					notice !== null && (0, react_jsx_runtime.jsx)("div", {
-						className: clsx(InputBar_module_css_default.notice, notice.level === "error" && InputBar_module_css_default.noticeError),
+					notice?.level === "info" && (0, react_jsx_runtime.jsx)("div", {
+						className: InputBar_module_css_default.notice,
 						role: "status",
 						children: notice.text
 					}),
@@ -3868,18 +4100,24 @@ window.__ModuleLoader__.load({
 								className: InputBar_module_css_default.accessory,
 								children: accessory
 							}),
-							railItems.length > 0 && (0, react_jsx_runtime.jsx)("div", {
-								className: InputBar_module_css_default.attachments,
-								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.AttachmentRail, {
-									items: railItems,
-									labels: attachmentRailLabels(t),
-									onOpen: (item) => {
-										if (item.attachment.isImage === true) setPreview(item.attachment);
-									},
-									onRemove: (item) => {
-										removeImage?.(item.attachment.id);
-									}
-								})
+							attachments.some((attachment) => attachment.isImage !== true) && (0, react_jsx_runtime.jsx)("div", {
+								style: { display: "flex", flexWrap: "wrap", gap: 6, padding: "4px 12px 0" },
+								children: attachments.filter((attachment) => attachment.isImage !== true).map((attachment) => (0, react_jsx_runtime.jsxs)("span", {
+									style: { display: "inline-flex", alignItems: "center", gap: 6, maxWidth: 220, padding: "5px 9px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 10, color: "var(--dsw-alias-label-secondary)", fontSize: 12 },
+									children: [(0, react_jsx_runtime.jsx)("span", { children: attachment.file.__dshFolderPath ? "📁" : "📎" }), (0, react_jsx_runtime.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: attachment.file.name || "attachment" }), (0, react_jsx_runtime.jsx)("button", { type: "button", "aria-label": t("image.remove", { name: attachment.file.name }), onClick: () => removeImage?.(attachment.id), style: { border: 0, padding: 0, background: "transparent", color: "inherit", cursor: "pointer" }, children: "×" })]
+								}, attachment.id))
+							}),
+							renderSlot("conversation.input.attachments", {
+								attachments: attachments.filter((attachment) => attachment.isImage === true),
+								canAcceptDrop,
+								onAddImages: intakeImages,
+								onRemoveImage: (id) => {
+									removeImage?.(id);
+								},
+								dropLimits: imageLimits === void 0 ? void 0 : {
+									count: imageLimits.maxImagesPerMessage,
+									size: imageSizeText(imageLimits.maxImageBytes)
+								}
 							}),
 							(0, react_jsx_runtime.jsx)("div", {
 								ref: scrollRef,
@@ -3890,8 +4128,9 @@ window.__ModuleLoader__.load({
 									children: [
 										(0, react_jsx_runtime.jsx)("div", {
 											"aria-hidden": true,
-											className: InputBar_module_css_default.backdrop,
+											className: clsx(InputBar_module_css_default.backdrop, textareaDisabled && InputBar_module_css_default.backdropDisabled),
 											"data-input-backdrop": true,
+											"data-disabled": textareaDisabled || void 0,
 											children: backdrop
 										}),
 										(0, react_jsx_runtime.jsx)("textarea", {
@@ -4041,18 +4280,12 @@ window.__ModuleLoader__.load({
 							})
 						]
 					}),
-					preview !== null && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.ImageLightbox, {
-						src: preview.previewUrl,
-						alt: preview.file.name || t("image.original"),
-						labels: lightboxLabels(t),
-						onClose: closePreview
-					}),
 					footer
 				]
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/settings/EnterBehaviorRow.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/settings/EnterBehaviorRow.module.css.mjs
 		const css$16 = ".T1PP_q_row{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.T1PP_q_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}.T1PP_q_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.T1PP_q_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}.T1PP_q_selector{background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:18px;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}.T1PP_q_selector:hover{background:var(--dsw-alias-interactive-bg-hover)}.T1PP_q_chevron{flex:none}";
 		const tagId$16 = "@deepseek-ai/dsh-client-ui-conversation/EnterBehaviorRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$16) + "]") === null) {
@@ -4063,10 +4296,10 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var EnterBehaviorRow_module_css_default = {
-			"row": "T1PP_q_row",
-			"rowText": "T1PP_q_rowText",
 			"chevron": "T1PP_q_chevron",
 			"desc": "T1PP_q_desc",
+			"row": "T1PP_q_row",
+			"rowText": "T1PP_q_rowText",
 			"selector": "T1PP_q_selector",
 			"title": "T1PP_q_title"
 		};
@@ -4130,8 +4363,8 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/MessageItem.module.css.mjs
-		const css$15 = ".gdEzaW_userRow{flex-direction:column;align-items:flex-end;gap:6px;display:flex}.gdEzaW_userStack{flex-direction:column;align-items:flex-end;gap:8px;min-width:0;max-width:min(525px,82%);display:flex}.gdEzaW_bubble{background:var(--dsw-specific-bubble);max-width:100%;color:var(--dsw-alias-label-primary);border-radius:22px;padding:10px 16px;font-size:16px;line-height:24px}.gdEzaW_contextRow,.gdEzaW_compactionRow{padding:2px 0}.gdEzaW_compactionButton{width:100%;min-width:0;height:24px;color:inherit;font:inherit;text-align:left;background:0 0;border:none;border-radius:6px;align-items:center;padding:0;display:flex}.gdEzaW_compactionButton:not(:disabled){cursor:pointer}.gdEzaW_compactionButton:not(:disabled):hover{background:var(--dsw-alias-interactive-bg-hover)}.gdEzaW_compactionLeading{width:16px;height:16px;color:var(--dsw-alias-label-secondary);flex:none;place-items:center;margin-right:6px;display:inline-grid}.gdEzaW_compactionContextIcon,.gdEzaW_compactionDisclosureIcon{grid-area:1/1;justify-content:center;align-items:center;display:inline-flex}.gdEzaW_compactionDisclosureIcon,.gdEzaW_compactionButton:not(:disabled):hover .gdEzaW_compactionContextIcon,.gdEzaW_compactionButton:not(:disabled):focus-visible .gdEzaW_compactionContextIcon{opacity:0}.gdEzaW_compactionButton:not(:disabled):hover .gdEzaW_compactionDisclosureIcon,.gdEzaW_compactionButton:not(:disabled):focus-visible .gdEzaW_compactionDisclosureIcon{opacity:1}.gdEzaW_compactionTitle{color:var(--dsw-alias-label-primary-dimmed);flex:none;font-size:14px;line-height:24px}.gdEzaW_compactionSep{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.gdEzaW_compactionSummary{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}.gdEzaW_compactionBody{color:var(--dsw-alias-label-tertiary);padding:4px 0 4px 22px;font-size:14px;line-height:24px}.gdEzaW_retryRow{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}.gdEzaW_retrySummary{width:fit-content;color:inherit;cursor:pointer;user-select:none;border-radius:3px;align-items:center;gap:7px;padding:2px 0;list-style:none;display:inline-flex}.gdEzaW_retrySummary::-webkit-details-marker{display:none}.gdEzaW_retrySummary:after{content:\"\";opacity:.8;border-bottom:1.5px solid;border-right:1.5px solid;width:6px;height:6px;transition:transform .12s;transform:rotate(-45deg)}.gdEzaW_retrySummary:hover{color:var(--dsw-alias-label-secondary)}.gdEzaW_retrySummary:focus-visible{outline:1.5px solid var(--dsw-alias-button-info-fill);outline-offset:2px}.gdEzaW_retryText{color:inherit}.gdEzaW_retryRow[data-active] .gdEzaW_retryText{background:linear-gradient(90deg, var(--dsw-alias-label-tertiary) 0%, var(--dsw-alias-label-tertiary) 40%, var(--dsw-alias-label-secondary) 50%, var(--dsw-alias-label-tertiary) 60%, var(--dsw-alias-label-tertiary) 100%);color:#0000;background-position:100%;background-size:200% 100%;background-clip:text;animation:1.6s ease-in-out infinite gdEzaW_retry-shimmer}.gdEzaW_retryRow[open] .gdEzaW_retrySummary:after{transform:rotate(45deg)}.gdEzaW_retryDetails{overflow-wrap:anywhere;gap:2px;margin-top:3px;padding-left:14px;font-size:12px;line-height:18px;display:grid}.gdEzaW_retryDetailLabel{color:var(--dsw-alias-label-secondary)}.gdEzaW_turnErrorRow{grid-template-columns:10px minmax(0,1fr) auto;align-items:start;gap:8px;padding:2px 0;font-size:13px;line-height:20px;display:grid}.gdEzaW_turnErrorDot{margin-top:5px}.gdEzaW_turnErrorCopy{overflow-wrap:anywhere;min-width:0}.gdEzaW_turnErrorTitle{color:var(--dsw-alias-state-error-primary);margin-right:6px;font-weight:600}.gdEzaW_turnErrorMessage{color:var(--dsw-alias-label-secondary)}.gdEzaW_turnErrorCode{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-markdown-code-block-small)}.gdEzaW_maxTokensTitle{color:var(--dsw-alias-state-warn-primary);margin-right:6px;font-weight:600}@keyframes gdEzaW_retry-shimmer{0%{background-position:100%}to{background-position:0}}@media (prefers-reduced-motion:reduce){.gdEzaW_retryRow[data-active] .gdEzaW_retryText{color:inherit;background:0 0;animation:none}}.gdEzaW_refChip{color:var(--dsw-alias-label-primary);white-space:nowrap;vertical-align:baseline;background:#6187d838;border-radius:6px;margin:0 2px;padding:0 8px;font-size:.85em;line-height:1.6;display:inline-block}";
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/MessageItem.module.css.mjs
+		const css$15 = ".gdEzaW_userRow{flex-direction:column;align-items:flex-end;gap:6px;display:flex}.gdEzaW_userStack{flex-direction:column;align-items:flex-end;gap:8px;min-width:0;max-width:min(525px,82%);display:flex}.gdEzaW_bubble{background:var(--dsw-specific-bubble);max-width:100%;color:var(--dsw-alias-label-primary);border-radius:22px;padding:10px 16px;font-size:16px;line-height:24px}.gdEzaW_referenceSummary{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.gdEzaW_contextRow,.gdEzaW_compactionRow{padding:2px 0}.gdEzaW_compactionButton{width:100%;min-width:0;height:24px;color:inherit;font:inherit;text-align:left;background:0 0;border:none;border-radius:6px;align-items:center;padding:0;display:flex}.gdEzaW_compactionButton:not(:disabled){cursor:pointer}.gdEzaW_compactionButton:not(:disabled):hover{background:var(--dsw-alias-interactive-bg-hover)}.gdEzaW_compactionLeading{width:16px;height:16px;color:var(--dsw-alias-label-secondary);flex:none;place-items:center;margin-right:6px;display:inline-grid}.gdEzaW_compactionContextIcon,.gdEzaW_compactionDisclosureIcon{grid-area:1/1;justify-content:center;align-items:center;display:inline-flex}.gdEzaW_compactionDisclosureIcon,.gdEzaW_compactionButton:not(:disabled):hover .gdEzaW_compactionContextIcon,.gdEzaW_compactionButton:not(:disabled):focus-visible .gdEzaW_compactionContextIcon{opacity:0}.gdEzaW_compactionButton:not(:disabled):hover .gdEzaW_compactionDisclosureIcon,.gdEzaW_compactionButton:not(:disabled):focus-visible .gdEzaW_compactionDisclosureIcon{opacity:1}.gdEzaW_compactionTitle{color:var(--dsw-alias-label-primary-dimmed);flex:none;font-size:14px;line-height:24px}.gdEzaW_compactionSep{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.gdEzaW_compactionSummary{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}.gdEzaW_compactionBody{color:var(--dsw-alias-label-tertiary);padding:4px 0 4px 22px;font-size:14px;line-height:24px}.gdEzaW_retryRow{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}.gdEzaW_retrySummary{width:fit-content;color:inherit;cursor:pointer;user-select:none;border-radius:3px;align-items:center;gap:7px;padding:2px 0;list-style:none;display:inline-flex}.gdEzaW_retrySummary::-webkit-details-marker{display:none}.gdEzaW_retrySummary:after{content:\"\";opacity:.8;border-bottom:1.5px solid;border-right:1.5px solid;width:6px;height:6px;transition:transform .12s;transform:rotate(-45deg)}.gdEzaW_retrySummary:hover{color:var(--dsw-alias-label-secondary)}.gdEzaW_retrySummary:focus-visible{outline:1.5px solid var(--dsw-alias-button-info-fill);outline-offset:2px}.gdEzaW_retryText{color:inherit}.gdEzaW_retryRow[data-active] .gdEzaW_retryText{background:linear-gradient(90deg, var(--dsw-alias-label-tertiary) 0%, var(--dsw-alias-label-tertiary) 40%, var(--dsw-alias-label-secondary) 50%, var(--dsw-alias-label-tertiary) 60%, var(--dsw-alias-label-tertiary) 100%);color:#0000;background-position:100%;background-size:200% 100%;background-clip:text;animation:1.6s ease-in-out infinite gdEzaW_retry-shimmer}.gdEzaW_retryRow[open] .gdEzaW_retrySummary:after{transform:rotate(45deg)}.gdEzaW_retryDetails{overflow-wrap:anywhere;gap:2px;margin-top:3px;padding-left:14px;font-size:12px;line-height:18px;display:grid}.gdEzaW_retryDetailLabel{color:var(--dsw-alias-label-secondary)}.gdEzaW_turnErrorRow{grid-template-columns:10px minmax(0,1fr) auto;align-items:start;gap:8px;padding:2px 0;font-size:13px;line-height:20px;display:grid}.gdEzaW_turnErrorDot{margin-top:5px}.gdEzaW_turnErrorCopy{overflow-wrap:anywhere;min-width:0}.gdEzaW_turnErrorTitle{color:var(--dsw-alias-state-error-primary);margin-right:6px;font-weight:600}.gdEzaW_turnErrorMessage{color:var(--dsw-alias-label-secondary)}.gdEzaW_turnErrorCode{color:var(--dsw-alias-label-tertiary);font:var(--dsw-font-markdown-code-block-small)}.gdEzaW_maxTokensTitle{color:var(--dsw-alias-state-warn-primary);margin-right:6px;font-weight:600}@keyframes gdEzaW_retry-shimmer{0%{background-position:100%}to{background-position:0}}@media (prefers-reduced-motion:reduce){.gdEzaW_retryRow[data-active] .gdEzaW_retryText{color:inherit;background:0 0;animation:none}}.gdEzaW_refChip{color:var(--dsw-alias-state-business-primary);white-space:nowrap;vertical-align:baseline;align-items:center;gap:4px;margin:0 2px;font-weight:500;display:inline-flex}.gdEzaW_refIcon{flex:none}";
 		const tagId$15 = "@deepseek-ai/dsh-client-ui-conversation/MessageItem.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$15) + "]") === null) {
 			const tag = document.createElement("style");
@@ -4141,33 +4374,35 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var MessageItem_module_css_default = {
-			"turnErrorRow": "gdEzaW_turnErrorRow",
-			"turnErrorCode": "gdEzaW_turnErrorCode",
-			"retryRow": "gdEzaW_retryRow",
-			"turnErrorMessage": "gdEzaW_turnErrorMessage",
+			"bubble": "gdEzaW_bubble",
+			"compactionBody": "gdEzaW_compactionBody",
+			"compactionButton": "gdEzaW_compactionButton",
+			"compactionContextIcon": "gdEzaW_compactionContextIcon",
+			"compactionDisclosureIcon": "gdEzaW_compactionDisclosureIcon",
+			"compactionLeading": "gdEzaW_compactionLeading",
+			"compactionRow": "gdEzaW_compactionRow",
+			"compactionSep": "gdEzaW_compactionSep",
+			"compactionSummary": "gdEzaW_compactionSummary",
 			"compactionTitle": "gdEzaW_compactionTitle",
 			"contextRow": "gdEzaW_contextRow",
-			"compactionSep": "gdEzaW_compactionSep",
+			"maxTokensTitle": "gdEzaW_maxTokensTitle",
+			"refChip": "gdEzaW_refChip",
+			"refIcon": "gdEzaW_refIcon",
+			"referenceSummary": "gdEzaW_referenceSummary",
+			"retry-shimmer": "gdEzaW_retry-shimmer",
+			"retryDetailLabel": "gdEzaW_retryDetailLabel",
+			"retryDetails": "gdEzaW_retryDetails",
+			"retryRow": "gdEzaW_retryRow",
+			"retrySummary": "gdEzaW_retrySummary",
+			"retryText": "gdEzaW_retryText",
+			"turnErrorCode": "gdEzaW_turnErrorCode",
 			"turnErrorCopy": "gdEzaW_turnErrorCopy",
+			"turnErrorDot": "gdEzaW_turnErrorDot",
+			"turnErrorMessage": "gdEzaW_turnErrorMessage",
+			"turnErrorRow": "gdEzaW_turnErrorRow",
 			"turnErrorTitle": "gdEzaW_turnErrorTitle",
 			"userRow": "gdEzaW_userRow",
-			"maxTokensTitle": "gdEzaW_maxTokensTitle",
-			"bubble": "gdEzaW_bubble",
-			"turnErrorDot": "gdEzaW_turnErrorDot",
-			"retry-shimmer": "gdEzaW_retry-shimmer",
-			"refChip": "gdEzaW_refChip",
-			"compactionDisclosureIcon": "gdEzaW_compactionDisclosureIcon",
-			"compactionButton": "gdEzaW_compactionButton",
-			"compactionBody": "gdEzaW_compactionBody",
-			"retryText": "gdEzaW_retryText",
-			"compactionSummary": "gdEzaW_compactionSummary",
-			"compactionContextIcon": "gdEzaW_compactionContextIcon",
-			"compactionRow": "gdEzaW_compactionRow",
-			"retryDetails": "gdEzaW_retryDetails",
-			"retrySummary": "gdEzaW_retrySummary",
-			"userStack": "gdEzaW_userStack",
-			"compactionLeading": "gdEzaW_compactionLeading",
-			"retryDetailLabel": "gdEzaW_retryDetailLabel"
+			"userStack": "gdEzaW_userStack"
 		};
 		//#endregion
 		//#region lib/types/client/chat/CompactionItem.js
@@ -4228,7 +4463,7 @@ window.__ModuleLoader__.load({
 			});
 		});
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/ContextBody.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/ContextBody.module.css.mjs
 		const css$14 = ".NM4-hq_text{color:var(--dsw-alias-label-secondary);font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.NM4-hq_fields{border-top:1px solid var(--dsw-alias-line-secondary);flex-direction:column;gap:2px;margin:8px 0 0;padding-top:8px;display:flex}.NM4-hq_field{gap:8px;min-width:0;display:flex}.NM4-hq_fieldKey{min-width:96px;color:var(--dsw-alias-label-caption);flex:none}.NM4-hq_fieldValue{min-width:0;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere;flex:auto;margin:0}.NM4-hq_files{flex-wrap:wrap;gap:4px 12px;margin:0 0 8px;padding:0;list-style:none;display:flex}.NM4-hq_file{align-items:baseline;gap:6px;min-width:0;display:flex}.NM4-hq_filePath{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.NM4-hq_fileAction{color:var(--dsw-alias-label-caption)}.NM4-hq_catalogNotice{color:var(--dsw-alias-label-caption);margin:0 0 6px}.NM4-hq_entries{flex-direction:column;gap:4px;margin:0;padding:0;list-style:none;display:flex}.NM4-hq_entry{gap:8px;min-width:0;display:flex}.NM4-hq_entryName{color:var(--dsw-alias-label-secondary);flex:none}.NM4-hq_entryDescription{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;overflow:hidden}.NM4-hq_sections{flex-direction:column;gap:8px;margin:0;display:flex}.NM4-hq_section{flex-direction:column;gap:2px;min-width:0;display:flex}.NM4-hq_sectionName{color:var(--dsw-alias-label-caption)}.NM4-hq_sectionText{color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.NM4-hq_relaySender{color:var(--dsw-alias-label-caption);overflow-wrap:anywhere;margin:0 0 6px}.NM4-hq_recalls{flex-direction:column;gap:2px;margin:0 0 8px;padding:0;list-style:none;display:flex}.NM4-hq_recall{gap:8px;min-width:0;display:flex}.NM4-hq_recallLabel{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.NM4-hq_recallCounts{color:var(--dsw-alias-label-caption);flex:none}";
 		const tagId$14 = "@deepseek-ai/dsh-client-ui-conversation/ContextBody.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$14) + "]") === null) {
@@ -4239,29 +4474,29 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ContextBody_module_css_default = {
-			"field": "NM4-hq_field",
-			"entryDescription": "NM4-hq_entryDescription",
-			"files": "NM4-hq_files",
-			"sections": "NM4-hq_sections",
-			"fieldKey": "NM4-hq_fieldKey",
 			"catalogNotice": "NM4-hq_catalogNotice",
-			"fields": "NM4-hq_fields",
+			"entries": "NM4-hq_entries",
 			"entry": "NM4-hq_entry",
+			"entryDescription": "NM4-hq_entryDescription",
+			"entryName": "NM4-hq_entryName",
+			"field": "NM4-hq_field",
+			"fieldKey": "NM4-hq_fieldKey",
+			"fieldValue": "NM4-hq_fieldValue",
+			"fields": "NM4-hq_fields",
+			"file": "NM4-hq_file",
+			"fileAction": "NM4-hq_fileAction",
+			"filePath": "NM4-hq_filePath",
+			"files": "NM4-hq_files",
+			"recall": "NM4-hq_recall",
+			"recallCounts": "NM4-hq_recallCounts",
+			"recallLabel": "NM4-hq_recallLabel",
+			"recalls": "NM4-hq_recalls",
+			"relaySender": "NM4-hq_relaySender",
+			"section": "NM4-hq_section",
 			"sectionName": "NM4-hq_sectionName",
 			"sectionText": "NM4-hq_sectionText",
-			"recall": "NM4-hq_recall",
-			"relaySender": "NM4-hq_relaySender",
-			"recallLabel": "NM4-hq_recallLabel",
-			"filePath": "NM4-hq_filePath",
-			"entries": "NM4-hq_entries",
-			"entryName": "NM4-hq_entryName",
-			"fileAction": "NM4-hq_fileAction",
-			"file": "NM4-hq_file",
-			"section": "NM4-hq_section",
-			"text": "NM4-hq_text",
-			"recalls": "NM4-hq_recalls",
-			"recallCounts": "NM4-hq_recallCounts",
-			"fieldValue": "NM4-hq_fieldValue"
+			"sections": "NM4-hq_sections",
+			"text": "NM4-hq_text"
 		};
 		//#endregion
 		//#region lib/types/client/chat/ContextBody.js
@@ -4785,7 +5020,7 @@ window.__ModuleLoader__.load({
 			}
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/ContextInjectionRow.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/ContextInjectionRow.module.css.mjs
 		const css$13 = ".pC0e7a_root{min-width:0}.pC0e7a_root[data-open]{padding-bottom:4px}.pC0e7a_chevron{color:var(--dsw-alias-label-secondary)}.pC0e7a_sep{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.pC0e7a_source{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:none;font-size:14px;line-height:24px;overflow:hidden}.pC0e7a_summary{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}.pC0e7a_body{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow:auto}";
 		const tagId$13 = "@deepseek-ai/dsh-client-ui-conversation/ContextInjectionRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$13) + "]") === null) {
@@ -4796,12 +5031,12 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ContextInjectionRow_module_css_default = {
-			"source": "pC0e7a_source",
-			"summary": "pC0e7a_summary",
 			"body": "pC0e7a_body",
-			"sep": "pC0e7a_sep",
 			"chevron": "pC0e7a_chevron",
-			"root": "pC0e7a_root"
+			"root": "pC0e7a_root",
+			"sep": "pC0e7a_sep",
+			"source": "pC0e7a_source",
+			"summary": "pC0e7a_summary"
 		};
 		//#endregion
 		//#region lib/types/client/chat/ContextInjectionRow.js
@@ -4825,7 +5060,10 @@ window.__ModuleLoader__.load({
 			});
 			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.DisclosureRow, {
 				className: ContextInjectionRow_module_css_default.root,
-				icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBrowseOutline16, { size: 14 }),
+				icon: provenance.role === "recall" ? (0, react_jsx_runtime.jsx)("span", {
+					"data-context-recall-icon": true,
+					children: (0, react_jsx_runtime.jsx)(ReferenceIcon, { kind: "session" })
+				}) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBrowseOutline16, { size: 14 }),
 				chevronClassName: ContextInjectionRow_module_css_default.chevron,
 				title: t(provenance.role === "recall" ? "message.contextRecall" : "message.contextInjection"),
 				collapsedContent: provenance.label === null ? void 0 : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
@@ -4885,7 +5123,7 @@ window.__ModuleLoader__.load({
 			return day;
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/MessageIconActions.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/MessageIconActions.module.css.mjs
 		const css$12 = ".p-xYUq_actions{align-items:center;gap:10px;height:28px;display:flex}.p-xYUq_timeStart{color:var(--dsw-alias-label-tertiary);white-space:nowrap;padding-right:12px;font-size:14px;line-height:24px}.p-xYUq_timeEnd{color:var(--dsw-alias-label-tertiary);white-space:nowrap;padding-left:12px;font-size:14px;line-height:24px}.p-xYUq_runTimeDot{margin:0 10px}@media (hover:hover){[data-time-hover-root] :is(.p-xYUq_timeStart,.p-xYUq_timeEnd){opacity:0;transition:opacity 80ms}[data-time-hover-root]:hover :is(.p-xYUq_timeStart,.p-xYUq_timeEnd),[data-time-hover-root]:focus-within :is(.p-xYUq_timeStart,.p-xYUq_timeEnd){opacity:1}}.p-xYUq_action{width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:28px;justify-content:center;align-items:center;padding:6px;display:inline-flex}.p-xYUq_action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.p-xYUq_action[data-unavailable]{cursor:default;opacity:.4}.p-xYUq_action[data-unavailable]:hover{color:var(--dsw-alias-label-tertiary);background:0 0}.p-xYUq_visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}";
 		const tagId$12 = "@deepseek-ai/dsh-client-ui-conversation/MessageIconActions.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$12) + "]") === null) {
@@ -4896,12 +5134,12 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var MessageIconActions_module_css_default = {
-			"actions": "p-xYUq_actions",
-			"timeStart": "p-xYUq_timeStart",
-			"runTimeDot": "p-xYUq_runTimeDot",
-			"visuallyHidden": "p-xYUq_visuallyHidden",
 			"action": "p-xYUq_action",
-			"timeEnd": "p-xYUq_timeEnd"
+			"actions": "p-xYUq_actions",
+			"runTimeDot": "p-xYUq_runTimeDot",
+			"timeEnd": "p-xYUq_timeEnd",
+			"timeStart": "p-xYUq_timeStart",
+			"visuallyHidden": "p-xYUq_visuallyHidden"
 		};
 		//#endregion
 		//#region lib/types/client/chat/MessageIconActions.js
@@ -5014,7 +5252,6 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region lib/types/client/chat/MessageItem.js
-		const DESKTOP_VISION_BRIDGE_DISPLAY = "[The user attached ";
 		function contentParts(content) {
 			const texts = [];
 			const images = [];
@@ -5310,28 +5547,62 @@ window.__ModuleLoader__.load({
 		* scan as the composer, minus the lexicon: sent tokens were validated at
 		* compose time, so shape alone decorates).
 		*/
-		function projectUserText(text) {
-			const re = /(^|\s)([/@][\w-]+)(?=\s|$)/g;
-			const parts = [];
-			let cursor = 0;
+		function projectUserText(text, sessionLabels) {
+			const ranges = [];
+			for (const rawLabel of [...new Set(sessionLabels)].sort((a, b) => b.length - a.length)) {
+				const label = `@${rawLabel}`;
+				let start = text.indexOf(label);
+				while (start >= 0) {
+					ranges.push({
+						start,
+						end: start + label.length,
+						label,
+						kind: "session"
+					});
+					start = text.indexOf(label, start + label.length);
+				}
+			}
+			const re = /(^|\s)(\/[\w-]+|@"[^"\n]+"|@[^\s]+)/gu;
 			let m;
 			while ((m = re.exec(text)) !== null) {
 				const tokenStart = m.index + (m[1]?.length ?? 0);
-				const label = m[2] ?? "";
+				const rawLabel = m[2] ?? "";
+				const label = rawLabel.startsWith("@\"") ? rawLabel : rawLabel.replace(/[.,;:!?，。；：！？]+$/gu, "");
+				if (label.length <= 1) continue;
+				ranges.push({
+					start: tokenStart,
+					end: tokenStart + label.length,
+					label,
+					kind: "plain"
+				});
+			}
+			ranges.sort((a, b) => a.start - b.start || (a.kind === b.kind ? b.end - a.end : a.kind === "session" ? -1 : 1));
+			const parts = [];
+			let cursor = 0;
+			for (const range of ranges) {
+				if (range.start < cursor) continue;
+				const { start: tokenStart, end, label, kind } = range;
 				if (tokenStart > cursor) parts.push((0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MessageText, { text: text.slice(cursor, tokenStart) }, cursor));
-				parts.push((0, react_jsx_runtime.jsx)("span", {
+				const referenceKind = kind === "session" ? "session" : label.startsWith("@") ? label.endsWith("/") ? "folder" : "file" : void 0;
+				const displayLabel = referenceKind === void 0 ? label : referenceKind === "session" ? label.slice(1) : label.slice(1).replace(/^"|"$/gu, "").split(/[\\/]/u).filter(Boolean).at(-1) ?? label.slice(1);
+				parts.push((0, react_jsx_runtime.jsxs)("span", {
 					className: MessageItem_module_css_default.refChip,
-					"data-ref-chip": label.startsWith("@") ? "subagent" : "skill",
-					children: label
+					"data-ref-chip": referenceKind ?? "skill",
+					title: label,
+					children: [referenceKind !== void 0 && (0, react_jsx_runtime.jsx)(ReferenceIcon, {
+						kind: referenceKind,
+						size: 16,
+						className: MessageItem_module_css_default.refIcon
+					}), displayLabel]
 				}, tokenStart));
-				cursor = tokenStart + label.length;
+				cursor = end;
 			}
 			if (parts.length === 0) return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MessageText, { text });
 			if (cursor < text.length) parts.push((0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.MessageText, { text: text.slice(cursor) }, cursor));
 			return (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: parts });
 		}
 		/** Right-aligned bubble shared by user and steering rows. */
-		function UserStyleBubble({ content, imageLoader, actions, pending = false, t }) {
+		function UserStyleBubble({ content, renderMessageImages, actions, pending = false, referenceLabels = [], t }) {
 			const { text, images, files, rest } = contentParts(content);
 			const truncated = (total) => t("json.truncated", { total });
 			const showBubble = text !== "" || rest.length > 0;
@@ -5341,30 +5612,28 @@ window.__ModuleLoader__.load({
 				"data-time-hover-root": true,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
 					className: MessageItem_module_css_default.userStack,
-					children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.ImageGallery, {
-						images,
-						load: imageLoader,
-						align: "end",
-						labels: messageImageLabels(t)
-					}), files.length > 0 && (0, react_jsx_runtime.jsx)("div", {
-						style: {
-							display: "flex",
-							flexWrap: "wrap",
-							justifyContent: "flex-end",
-							gap: 8,
-							marginBottom: 4
-						},
-						children: files.map((file, i) => (0, react_jsx_runtime.jsx)(FileAttachmentCard, {
-							file
-						}, i))
-					}), showBubble && (0, react_jsx_runtime.jsxs)("div", {
-						className: MessageItem_module_css_default.bubble,
-						children: [projectUserText(text), rest.map((block, i) => (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.JsonBlock, {
-							label: t("message.extraBlock"),
-							payload: block,
-							truncatedLabel: truncated
-						}, i))]
-					})]
+					children: [
+						renderMessageImages({
+							images,
+							align: "end"
+						}),
+						files.length > 0 && (0, react_jsx_runtime.jsx)("div", {
+							style: { display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, marginBottom: 4 },
+							children: files.map((file, i) => (0, react_jsx_runtime.jsx)(FileAttachmentCard, { file }, i))
+						}),
+						showBubble && (0, react_jsx_runtime.jsxs)("div", {
+							className: MessageItem_module_css_default.bubble,
+							children: [projectUserText(text, referenceLabels), rest.map((block, i) => (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.JsonBlock, {
+								label: t("message.extraBlock"),
+								payload: block,
+								truncatedLabel: truncated
+							}, i))]
+						}),
+							referenceLabels.length > 0 && (0, react_jsx_runtime.jsx)("div", {
+							className: MessageItem_module_css_default.referenceSummary,
+							children: t("message.referenceSummary", { labels: referenceLabels.join(t("message.referenceSeparator")) })
+						})
+						]
 				}), actions?.(text)]
 			});
 		}
@@ -5374,10 +5643,10 @@ window.__ModuleLoader__.load({
 		* @param props - Pending message content and conversation translator.
 		* @returns the pending steering bubble.
 		*/
-		function PendingSteeringBubble({ content, loadImage, t }) {
+		function PendingSteeringBubble({ content, renderMessageImages, t }) {
 			return (0, react_jsx_runtime.jsx)(UserStyleBubble, {
 				content,
-				imageLoader: loadImage ?? (() => Promise.reject(new Error(t("image.serviceUnavailable")))),
+				renderMessageImages,
 				pending: true,
 				t,
 				actions: (text) => (0, react_jsx_runtime.jsx)(MessageIconActions, {
@@ -5389,19 +5658,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** User and admitted-steering keyed Chat renderer. */
-		// — Desktop edit-after-cancel support ---------------------------------------
-		// The desktop plugin writes to window.__dshEditStore so this component can
-		// reactively show a pencil icon on the last user message after the user
-		// presses ESC to cancel an in-flight turn.
-		const _dshEditAbsent = { subscribe: () => () => {}, getSnapshot: () => null };
-		function useDshEditStore() {
-			const store = typeof window !== "undefined" && window.__dshEditStore;
-			return (0, react.useSyncExternalStore)(
-				store ? store.subscribe : _dshEditAbsent.subscribe,
-				store ? store.getSnapshot : _dshEditAbsent.getSnapshot,
-			);
-		}
-		const UserMessageNodeView = (0, react.memo)(function UserMessageNodeView({ node, loadImage, t }) {
+		const UserMessageNodeView = (0, react.memo)(function UserMessageNodeView({ node, renderMessageImages, t }) {
 			const data = node.data;
 			const messageText = contentParts(data.content).text;
 			const editState = useDshEditStore();
@@ -5524,14 +5781,14 @@ window.__ModuleLoader__.load({
 			}
 			return (0, react_jsx_runtime.jsx)(UserStyleBubble, {
 				content: data.content,
-				imageLoader: loadImage,
+				renderMessageImages,
+				...data.referenceLabels === void 0 ? {} : { referenceLabels: data.referenceLabels },
 				t,
-				actions: (text) => (0, react_jsx_runtime.jsxs)(MessageIconActions, {
+				actions: (text) => (0, react_jsx_runtime.jsx)(MessageIconActions, {
 					text,
 					time: data.time,
 					clock: "start",
 					className: MessageItem_module_css_default.actions,
-					extraActions: extraEdit,
 					t
 				})
 			});
@@ -5587,8 +5844,8 @@ window.__ModuleLoader__.load({
 			});
 		});
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/ChatView.module.css.mjs
-		const css$11 = ".Md3f7G_root{flex-direction:column;flex:auto;min-height:0;display:flex;position:relative}.Md3f7G_scroll{min-height:0;padding:16px calc(var(--dsh-composer-side-clearance) + 16px);flex:auto;overflow-y:auto}[data-conversation-scroll] .Md3f7G_root{flex:none;height:auto;min-height:auto}[data-conversation-scroll] .Md3f7G_scroll{flex:none;min-height:auto;overflow:visible}.Md3f7G_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.Md3f7G_flowItem{min-width:0}.Md3f7G_flowItem:empty{display:none}.Md3f7G_callRow{border-radius:6px}.Md3f7G_turnStatus{height:26px;font:var(--dsw-font-s-strong-14);white-space:nowrap;background:linear-gradient(90deg, var(--dsw-static-deepseek-500) 0%, var(--dsw-static-deepseek-500) 40%, var(--dsw-static-deepseek-200) 50%, var(--dsw-static-deepseek-500) 60%, var(--dsw-static-deepseek-500) 100%);color:#0000;-webkit-text-fill-color:transparent;background-position:100% 0;background-size:250% 100%;-webkit-background-clip:text;background-clip:text;flex:none;align-self:flex-start;align-items:center;animation:1.8s linear infinite Md3f7G_dsh-turn-status-shimmer;display:inline-flex}.Md3f7G_turnStatusClock{font:var(--dsw-font-xs-13);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-caption);-webkit-text-fill-color:var(--dsw-alias-label-caption);margin-left:8px;font-weight:400}@keyframes Md3f7G_dsh-turn-status-shimmer{to{background-position:0 0}}@media (prefers-reduced-motion:reduce){.Md3f7G_turnStatus{background-position:0 0;background-size:100% 100%;animation:none}}.Md3f7G_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.Md3f7G_openError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}.Md3f7G_older{justify-content:center;display:flex}.Md3f7G_older button{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover-solid);cursor:pointer;border:none;border-radius:14px;padding:4px 12px;font-size:12px}.Md3f7G_older button:disabled{cursor:default;opacity:.6}.Md3f7G_toBottomSlot{z-index:8;height:0;padding-right:max(0px, calc((100% - var(--dsh-chat-content-width)) / 2));pointer-events:none;justify-content:flex-end;display:flex;position:sticky;bottom:16px}[data-conversation-scroll] .Md3f7G_toBottomSlot{bottom:calc(var(--dsh-composer-height,152px) + 16px)}.Md3f7G_toBottom{border:1px solid var(--dsw-alias-border-l2);width:34px;height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-floating-fill);box-shadow:var(--dsw-shadow-lv2);cursor:pointer;pointer-events:auto;border-radius:100px;justify-content:center;align-items:center;margin-top:-34px;padding:0;display:flex}.Md3f7G_toBottom:hover{background:var(--dsw-alias-button-floating-hover)}";
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/ChatView.module.css.mjs
+		const css$11 = ".Md3f7G_root{flex-direction:column;flex:auto;min-height:0;display:flex;position:relative}.Md3f7G_scroll{min-height:0;padding:16px calc(var(--dsh-composer-side-clearance) + 16px);flex:auto;overflow-y:auto;container-type:inline-size}[data-conversation-scroll] .Md3f7G_root{flex:none;height:auto;min-height:auto}[data-conversation-scroll] .Md3f7G_scroll{flex:none;min-height:auto;overflow:visible}.Md3f7G_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.Md3f7G_flowItem{min-width:0}.Md3f7G_flowItem:empty{display:none}.Md3f7G_callRow{border-radius:6px}.Md3f7G_turnStatus{height:26px;font:var(--dsw-font-s-strong-14);white-space:nowrap;background:linear-gradient(90deg, var(--dsw-static-deepseek-500) 0%, var(--dsw-static-deepseek-500) 40%, var(--dsw-static-deepseek-200) 50%, var(--dsw-static-deepseek-500) 60%, var(--dsw-static-deepseek-500) 100%);color:#0000;-webkit-text-fill-color:transparent;background-position:100% 0;background-size:250% 100%;-webkit-background-clip:text;background-clip:text;flex:none;align-self:flex-start;align-items:center;animation:1.8s linear infinite Md3f7G_dsh-turn-status-shimmer;display:inline-flex}.Md3f7G_turnStatusClock{font:var(--dsw-font-xs-13);font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-caption);-webkit-text-fill-color:var(--dsw-alias-label-caption);margin-left:8px;font-weight:400}@keyframes Md3f7G_dsh-turn-status-shimmer{to{background-position:0 0}}@media (prefers-reduced-motion:reduce){.Md3f7G_turnStatus{background-position:0 0;background-size:100% 100%;animation:none}}.Md3f7G_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}.Md3f7G_openError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}.Md3f7G_older{justify-content:center;display:flex}.Md3f7G_older button{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover-solid);cursor:pointer;border:none;border-radius:14px;padding:4px 12px;font-size:12px}.Md3f7G_older button:disabled{cursor:default;opacity:.6}.Md3f7G_toBottomSlot{z-index:8;height:0;padding-right:max(0px, calc((100% - var(--dsh-chat-content-width)) / 2));pointer-events:none;justify-content:flex-end;display:flex;position:sticky;bottom:16px}[data-conversation-scroll] .Md3f7G_toBottomSlot{bottom:calc(var(--dsh-composer-height,152px) + 16px)}.Md3f7G_toBottom{border:1px solid var(--dsw-alias-border-l2);width:34px;height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-button-floating-fill);box-shadow:var(--dsw-shadow-lv2);cursor:pointer;pointer-events:auto;border-radius:100px;justify-content:center;align-items:center;margin-top:-34px;padding:0;display:flex}.Md3f7G_toBottom:hover{background:var(--dsw-alias-button-floating-hover)}.Md3f7G_modalAction{min-width:72px}";
 		const tagId$11 = "@deepseek-ai/dsh-client-ui-conversation/ChatView.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$11) + "]") === null) {
 			const tag = document.createElement("style");
@@ -5598,24 +5855,25 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ChatView_module_css_default = {
-			"toBottom": "Md3f7G_toBottom",
-			"column": "Md3f7G_column",
 			"callRow": "Md3f7G_callRow",
-			"turnStatusClock": "Md3f7G_turnStatusClock",
-			"flowItem": "Md3f7G_flowItem",
-			"scroll": "Md3f7G_scroll",
-			"hint": "Md3f7G_hint",
-			"toBottomSlot": "Md3f7G_toBottomSlot",
-			"older": "Md3f7G_older",
-			"turnStatus": "Md3f7G_turnStatus",
-			"root": "Md3f7G_root",
+			"column": "Md3f7G_column",
 			"dsh-turn-status-shimmer": "Md3f7G_dsh-turn-status-shimmer",
-			"openError": "Md3f7G_openError"
+			"flowItem": "Md3f7G_flowItem",
+			"hint": "Md3f7G_hint",
+			"modalAction": "Md3f7G_modalAction",
+			"older": "Md3f7G_older",
+			"openError": "Md3f7G_openError",
+			"root": "Md3f7G_root",
+			"scroll": "Md3f7G_scroll",
+			"toBottom": "Md3f7G_toBottom",
+			"toBottomSlot": "Md3f7G_toBottomSlot",
+			"turnStatus": "Md3f7G_turnStatus",
+			"turnStatusClock": "Md3f7G_turnStatusClock"
 		};
 		//#endregion
 		//#region lib/types/client/chat/ChatNodeSeat.js
 		/** Subscribe and dispatch one stable Context key without observing sibling Nodes. */
-		const ChatNodeSeat = (0, react.memo)(function ChatNodeSeat({ nodeKey, selectedCallId, cwd, openFile, inspectCall, forkAt, loadImage, fileMentions, useSession, renderSlot, t }) {
+		const ChatNodeSeat = (0, react.memo)(function ChatNodeSeat({ nodeKey, selectedCallId, cwd, openFile, inspectCall, forkAt, renderMessageImages, fileMentions, useSession, renderSlot, t }) {
 			const node = useSession((snapshot) => snapshot.chat.nodes.get(nodeKey));
 			const routedNode = node;
 			const owner = (0, react.useMemo)(() => node === void 0 ? null : {
@@ -5624,7 +5882,7 @@ window.__ModuleLoader__.load({
 				openFile,
 				inspectCall,
 				forkAt,
-				loadImage,
+				renderMessageImages,
 				fileMentions
 			}, [
 				node,
@@ -5633,7 +5891,7 @@ window.__ModuleLoader__.load({
 				openFile,
 				inspectCall,
 				forkAt,
-				loadImage,
+				renderMessageImages,
 				fileMentions
 			]);
 			if (routedNode === void 0 || owner === null) return null;
@@ -5710,6 +5968,15 @@ window.__ModuleLoader__.load({
 				anchorTop: flowTop(row, scrollport),
 				scrollTop: scrollport.scrollTop
 			};
+		}
+		/** Host/OS refusal text for the file-open dialog; empty throws keep a locale fallback. */
+		function openFailureMessage(error, fallback) {
+			const message = error instanceof Error ? error.message : String(error);
+			return message === "" ? fallback : message;
+		}
+		/** ProducedFiles opens the session workspace as `.`. */
+		function isFolderOpenPath(path) {
+			return path === ".";
 		}
 		/** Resolve one history-rail target to a currently projected user row. New
 		 *  records use the durable message id; legacy records fall back to exact
@@ -5788,7 +6055,35 @@ window.__ModuleLoader__.load({
 			const hasMore = useSession((s) => s.hasMore);
 			const loadingOlder = useSession((s) => s.loadingOlder);
 			const selectedCallId = useStore((s) => s.selection?.callId);
+			const [fileOpenError, setFileOpenError] = (0, react.useState)(null);
+			const [fileOpenBusy, setFileOpenBusy] = (0, react.useState)(false);
+			const fileOpenRequest = (0, react.useRef)(0);
+			const requestOpenFile = (0, react.useCallback)((path) => {
+				const id = ++fileOpenRequest.current;
+				setFileOpenBusy(true);
+				openFile(path).then(() => {
+					if (id !== fileOpenRequest.current) return;
+					setFileOpenError(null);
+					setFileOpenBusy(false);
+				}, (error) => {
+					if (id !== fileOpenRequest.current) return;
+					setFileOpenError({
+						path,
+						message: openFailureMessage(error, t(isFolderOpenPath(path) ? "fileOpen.folderUnknown" : "fileOpen.unknown"))
+					});
+					setFileOpenBusy(false);
+				});
+			}, [openFile, t]);
+			const closeFileOpenError = (0, react.useCallback)(() => {
+				fileOpenRequest.current += 1;
+				setFileOpenError(null);
+				setFileOpenBusy(false);
+			}, []);
 			const pendingSteering = (0, react.useMemo)(() => inbox.filter((item) => item.placement === "steering"), [inbox]);
+			const renderMessageImages = (0, react.useCallback)((owner) => renderSlot("conversation.message.images", {
+				...owner,
+				loadImage
+			}), [loadImage, renderSlot]);
 			const runningTurnStart = (0, react.useMemo)(() => runningTurnStartTime(timeline), [timeline]);
 			const listRef = (0, react.useRef)(null);
 			const columnRef = (0, react.useRef)(null);
@@ -6013,9 +6308,9 @@ window.__ModuleLoader__.load({
 				const el = scrollerOf(local);
 				if (el.scrollHeight <= el.clientHeight + 1) loadOlderAnchored();
 			}, [order.length, hasMore, loadingOlder]);
-			return (0, react_jsx_runtime.jsx)("div", {
+			return (0, react_jsx_runtime.jsxs)("div", {
 				className: ChatView_module_css_default.root,
-				children: (0, react_jsx_runtime.jsxs)("div", {
+				children: [(0, react_jsx_runtime.jsxs)("div", {
 					ref: listRef,
 					className: ChatView_module_css_default.scroll,
 					children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -6039,10 +6334,10 @@ window.__ModuleLoader__.load({
 								useSession,
 								selectedCallId,
 								cwd,
-								openFile,
+								openFile: requestOpenFile,
 								inspectCall,
 								forkAt,
-								loadImage,
+								renderMessageImages,
 								fileMentions,
 								renderSlot,
 								t
@@ -6053,7 +6348,7 @@ window.__ModuleLoader__.load({
 							}),
 							pendingSteering.map((item) => (0, react_jsx_runtime.jsx)(PendingSteeringBubble, {
 								content: item.content,
-								loadImage,
+								renderMessageImages,
 								t
 							}, item.id))
 						]
@@ -6071,7 +6366,38 @@ window.__ModuleLoader__.load({
 							children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
 						})
 					})]
-				})
+				}), fileOpenError !== null && (0, react_jsx_runtime.jsx)(FileOpenErrorDialog, {
+					path: fileOpenError.path,
+					message: fileOpenError.message,
+					busy: fileOpenBusy,
+					onClose: closeFileOpenError,
+					onRetry: () => {
+						requestOpenFile(fileOpenError.path);
+					},
+					t
+				})]
+			});
+		}
+		/** In-page Host open-path refusal: the wire reason plus a retry of the same path. */
+		function FileOpenErrorDialog({ path, message, busy, onClose, onRetry, t }) {
+			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Modal, {
+				open: true,
+				onClose,
+				closeLabel: t("close"),
+				title: t(isFolderOpenPath(path) ? "fileOpen.folderTitle" : "fileOpen.title"),
+				description: message,
+				footer: (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+					variant: "outline",
+					className: ChatView_module_css_default.modalAction,
+					onClick: onClose,
+					children: t("cancel")
+				}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+					variant: "primary",
+					className: ChatView_module_css_default.modalAction,
+					disabled: busy,
+					onClick: onRetry,
+					children: t("retry")
+				})] })
 			});
 		}
 		//#endregion
@@ -6161,7 +6487,7 @@ window.__ModuleLoader__.load({
 			}
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/ApprovalPanel.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/ApprovalPanel.module.css.mjs
 		const css$10 = ".bqrRRG_root{padding:8px calc(var(--dsh-composer-side-clearance) + 16px) 12px;flex-direction:column;align-items:center;display:flex}.bqrRRG_card{width:100%;max-width:var(--dsh-chat-content-width);border:1px solid var(--dsw-alias-state-warn-secondary);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:20px;overflow:hidden}.bqrRRG_strip{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-primary);align-items:center;gap:8px;padding:10px 16px;font-size:13px;line-height:18px;display:flex}.bqrRRG_dot{background:var(--dsw-alias-state-warn-primary);border-radius:50%;width:8px;height:8px}.bqrRRG_body{box-sizing:border-box;max-height:var(--dsh-composer-text-max-height);flex-direction:column;gap:6px;padding:12px 16px 0;display:flex;overflow-y:auto}.bqrRRG_headline{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:500;line-height:24px}.bqrRRG_command{color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);word-break:break-all;font-size:13px;line-height:20px}.bqrRRG_actionRow{justify-content:flex-end;gap:8px;padding:14px 16px;display:flex}.bqrRRG_reject:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);border-color:#0000}";
 		const tagId$10 = "@deepseek-ai/dsh-client-ui-conversation/ApprovalPanel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$10) + "]") === null) {
@@ -6172,14 +6498,14 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ApprovalPanel_module_css_default = {
+			"actionRow": "bqrRRG_actionRow",
+			"body": "bqrRRG_body",
 			"card": "bqrRRG_card",
 			"command": "bqrRRG_command",
-			"actionRow": "bqrRRG_actionRow",
-			"root": "bqrRRG_root",
-			"body": "bqrRRG_body",
+			"dot": "bqrRRG_dot",
 			"headline": "bqrRRG_headline",
 			"reject": "bqrRRG_reject",
-			"dot": "bqrRRG_dot",
+			"root": "bqrRRG_root",
 			"strip": "bqrRRG_strip"
 		};
 		//#endregion
@@ -6315,6 +6641,7 @@ window.__ModuleLoader__.load({
 			"image.fileTooLarge": "单张图片不能超过 {size}",
 			"image.totalTooLarge": "图片总大小超过 {size}，请移除部分图片",
 			"image.tooManyPixels": "图片分辨率过大，请压缩后重试",
+			"image.dimensionTooLarge": "图片宽高不能超过 {size}px，请缩小后重试",
 			"image.modelUnsupported": "当前模型不支持图片，请切换支持图片的模型",
 			"image.subagentUnsupported": "子智能体会话暂不支持图片",
 			"image.sendFailed": "图片发送失败（{reason}），请重新添加图片后再试",
@@ -6360,9 +6687,15 @@ window.__ModuleLoader__.load({
 			"chat.loadError": "历史加载失败：{message}（{code}）",
 			"chat.loadOlder": "加载更早",
 			"chat.toBottom": "回到底部",
+			"fileOpen.title": "无法打开文件",
+			"fileOpen.unknown": "无法打开此文件",
+			"fileOpen.folderTitle": "无法打开文件夹",
+			"fileOpen.folderUnknown": "无法打开此文件夹",
 			"message.extraBlock": "附加内容块",
 			"message.contextInjection": "上下文注入",
 			"message.contextRecall": "跨会话召回",
+			"message.referenceSummary": "引用会话 · {labels}",
+			"message.referenceSeparator": "、",
 			"message.context.instructions.loaded": "已载入",
 			"message.context.instructions.added": "已新增",
 			"message.context.instructions.updated": "已更新",
@@ -6402,6 +6735,7 @@ window.__ModuleLoader__.load({
 			"command.failed": "命令失败",
 			"command.done": "已完成",
 			"command.title": "命令",
+			"command.imagesUnsupported": "/{command} 不接受图片附件，请先移除图片",
 			"approval.waiting": "等待审批",
 			"approval.detail.aria": "审批详情",
 			"approval.escalation": "工具 {toolName} 请求越权执行",
@@ -6480,6 +6814,7 @@ window.__ModuleLoader__.load({
 			"image.fileTooLarge": "Each image must be smaller than {size}",
 			"image.totalTooLarge": "Images exceed {size} in total; remove some and try again",
 			"image.tooManyPixels": "Image resolution is too high; compress it and try again",
+			"image.dimensionTooLarge": "Image sides must be at most {size}px; downscale it and try again",
 			"image.modelUnsupported": "The current model does not support images; switch to a model that does",
 			"image.subagentUnsupported": "Subagent sessions do not support images yet",
 			"image.sendFailed": "Sending images failed ({reason}); re-add them and try again",
@@ -6525,9 +6860,15 @@ window.__ModuleLoader__.load({
 			"chat.loadError": "Failed to load history: {message} ({code})",
 			"chat.loadOlder": "Load earlier",
 			"chat.toBottom": "Back to bottom",
+			"fileOpen.title": "Couldn’t open file",
+			"fileOpen.unknown": "Couldn’t open this file",
+			"fileOpen.folderTitle": "Couldn’t open folder",
+			"fileOpen.folderUnknown": "Couldn’t open this folder",
 			"message.extraBlock": "Extra content block",
 			"message.contextInjection": "Context injection",
 			"message.contextRecall": "Session recall",
+			"message.referenceSummary": "Referenced session · {labels}",
+			"message.referenceSeparator": ", ",
 			"message.context.instructions.loaded": "loaded",
 			"message.context.instructions.added": "added",
 			"message.context.instructions.updated": "updated",
@@ -6567,6 +6908,7 @@ window.__ModuleLoader__.load({
 			"command.failed": "Command failed",
 			"command.done": "Completed",
 			"command.title": "Command",
+			"command.imagesUnsupported": "/{command} does not accept image attachments; remove them first",
 			"approval.waiting": "Waiting for approval",
 			"approval.detail.aria": "Approval details",
 			"approval.escalation": "Tool {toolName} requests privileged execution",
@@ -6608,7 +6950,7 @@ window.__ModuleLoader__.load({
 			"clock.ymd": "{y}-{m}-{d}"
 		};
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/TodoPanel.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/TodoPanel.module.css.mjs
 		const css$9 = ".lXshSW_root{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));max-width:calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-tip);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:12px;flex:none;margin:0 auto;overflow:hidden}.lXshSW_body{flex-direction:column;gap:8px;padding:6px 12px;display:flex}.lXshSW_header{text-align:left;cursor:pointer;background:0 0;border:none;align-items:center;gap:10px;width:100%;padding:0;display:flex}.lXshSW_lead{color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}.lXshSW_title{color:var(--dsw-alias-label-primary);flex:none;font-size:13px;font-weight:500;line-height:24px}.lXshSW_progress{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:13px;font-weight:400;line-height:20px;overflow:hidden}.lXshSW_chevron{color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}.lXshSW_list{flex-direction:column;gap:8px;max-height:180px;margin:0;padding:0;list-style:none;display:flex;overflow-y:auto}.lXshSW_item{min-width:0;color:var(--dsw-alias-label-secondary);align-items:center;gap:10px;font-size:13px;line-height:20px;display:flex}.lXshSW_glyph{flex:none;place-items:center;width:16px;height:16px;display:grid}.lXshSW_glyphCompleted{color:var(--dsw-alias-state-success-primary)}.lXshSW_glyphPending{color:var(--dsw-alias-label-caption)}.lXshSW_glyphProgress{color:var(--dsw-alias-state-business-primary);animation:1s linear infinite lXshSW_todo-progress-spin}@keyframes lXshSW_todo-progress-spin{to{transform:rotate(360deg)}}.lXshSW_content{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}";
 		const tagId$9 = "@deepseek-ai/dsh-client-ui-conversation/TodoPanel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$9) + "]") === null) {
@@ -6619,21 +6961,21 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var TodoPanel_module_css_default = {
+			"body": "lXshSW_body",
+			"chevron": "lXshSW_chevron",
+			"content": "lXshSW_content",
 			"glyph": "lXshSW_glyph",
 			"glyphCompleted": "lXshSW_glyphCompleted",
-			"item": "lXshSW_item",
-			"title": "lXshSW_title",
-			"glyphProgress": "lXshSW_glyphProgress",
 			"glyphPending": "lXshSW_glyphPending",
-			"chevron": "lXshSW_chevron",
-			"todo-progress-spin": "lXshSW_todo-progress-spin",
-			"root": "lXshSW_root",
+			"glyphProgress": "lXshSW_glyphProgress",
 			"header": "lXshSW_header",
-			"body": "lXshSW_body",
+			"item": "lXshSW_item",
 			"lead": "lXshSW_lead",
 			"list": "lXshSW_list",
 			"progress": "lXshSW_progress",
-			"content": "lXshSW_content"
+			"root": "lXshSW_root",
+			"title": "lXshSW_title",
+			"todo-progress-spin": "lXshSW_todo-progress-spin"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/TodoPanel.js
@@ -6815,7 +7157,7 @@ window.__ModuleLoader__.load({
 			}
 		};
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/queue/QueueDock.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/queue/QueueDock.module.css.mjs
 		const css$8 = "._7yHdaG_dock{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));max-width:calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));margin:0 auto calc(0px - var(--dsh-composer-stack-gap) - 3px);padding:0 var(--dsh-composer-dock-inset);flex:none}._7yHdaG_panel{background:var(--dsw-specific-tip);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:12px 12px 0 0;width:100%;padding:2px 0;position:relative;overflow:hidden}._7yHdaG_panel:after{border:1px solid var(--dsw-alias-border-l1);border-radius:inherit;content:\"\";pointer-events:none;border-bottom:none;position:absolute;inset:0}._7yHdaG_header{box-sizing:border-box;width:100%;height:36px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:none;border-radius:8px;align-items:center;gap:10px;padding:4px 12px;display:flex}._7yHdaG_header:focus-visible{outline:2px solid var(--dsw-alias-label-tertiary);outline-offset:-2px}._7yHdaG_header:disabled{cursor:default}._7yHdaG_lead{color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}._7yHdaG_count{min-width:0;font-family:Inter, var(--dsw-font-family);flex:auto;font-size:13px;font-weight:500;line-height:24px}._7yHdaG_chevron{width:14px;height:14px;color:var(--dsw-alias-label-tertiary);flex:none;place-items:center;display:grid}._7yHdaG_list{max-height:180px;margin:0;padding:0;list-style:none;overflow-y:auto}._7yHdaG_row{box-sizing:border-box;border-radius:8px;align-items:center;gap:10px;width:100%;height:36px;padding:4px 5px 4px 12px;display:flex}._7yHdaG_row+._7yHdaG_row{box-shadow:inset 0 1px 0 var(--dsw-alias-border-l1)}._7yHdaG_preview,._7yHdaG_editor{min-width:0;font:var(--dsw-font-xs-13);font-family:Inter, var(--dsw-font-family);flex:auto}._7yHdaG_preview{color:var(--dsw-alias-label-primary-dimmed);text-overflow:ellipsis;white-space:nowrap;word-break:break-word;overflow:hidden}._7yHdaG_editor{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);height:28px;color:var(--dsw-alias-label-primary);border-radius:6px;outline:none;padding:0 8px}._7yHdaG_editor:focus{border-color:var(--dsw-alias-state-business-primary)}._7yHdaG_actions{flex:none;align-items:center;gap:10px;display:flex}._7yHdaG_action{width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:999px;flex:none;place-items:center;padding:0;display:grid}._7yHdaG_action:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}._7yHdaG_action:focus-visible{outline:2px solid var(--dsw-alias-label-tertiary);outline-offset:-2px}._7yHdaG_action:disabled{cursor:default;opacity:.45}";
 		const tagId$8 = "@deepseek-ai/dsh-client-ui-conversation/QueueDock.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$8) + "]") === null) {
@@ -6826,18 +7168,18 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var QueueDock_module_css_default = {
+			"action": "_7yHdaG_action",
+			"actions": "_7yHdaG_actions",
+			"chevron": "_7yHdaG_chevron",
+			"count": "_7yHdaG_count",
 			"dock": "_7yHdaG_dock",
+			"editor": "_7yHdaG_editor",
+			"header": "_7yHdaG_header",
+			"lead": "_7yHdaG_lead",
 			"list": "_7yHdaG_list",
 			"panel": "_7yHdaG_panel",
-			"row": "_7yHdaG_row",
-			"header": "_7yHdaG_header",
-			"count": "_7yHdaG_count",
 			"preview": "_7yHdaG_preview",
-			"actions": "_7yHdaG_actions",
-			"action": "_7yHdaG_action",
-			"lead": "_7yHdaG_lead",
-			"editor": "_7yHdaG_editor",
-			"chevron": "_7yHdaG_chevron"
+			"row": "_7yHdaG_row"
 		};
 		//#endregion
 		//#region lib/types/client/queue/QueueDock.js
@@ -7084,7 +7426,7 @@ window.__ModuleLoader__.load({
 			}
 		};
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css.mjs
 		const css$7 = ".pXSMma_root{justify-content:center;align-items:center;min-width:0;height:100%;padding:0 24px;display:flex}.pXSMma_stack{width:100%;max-width:var(--dsh-composer-card-max-width);flex-direction:column;align-items:stretch;gap:12px;display:flex;overflow:visible}.pXSMma_headline{color:var(--dsw-alias-label-primary);grid-template-columns:34px auto auto;justify-content:center;align-items:center;column-gap:10px;font-size:26px;font-weight:500;line-height:32px;display:grid}.pXSMma_headlineText{grid-area:1/2}.pXSMma_previewBadge{border:1px solid var(--dsw-alias-interactive-bg-hover);background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-label-primary-bluish);font-family:var(--ds-font-family-code);white-space:nowrap;border-radius:24px;grid-area:1/3;align-self:start;margin-top:2px;margin-left:-3px;padding:1px 7px 0;font-size:12px;font-weight:500;line-height:18px}.pXSMma_fishHitbox{grid-area:1/1;justify-content:center;align-items:center;display:inline-flex}.pXSMma_fish{color:var(--dsw-alias-label-primary);transform-origin:50% 60%}@keyframes pXSMma_hero-fish-swim{0%,to{transform:translate(0)rotate(0)}35%{transform:translate(-1px,-1px)rotate(-5deg)}70%{transform:translate(1px)rotate(3deg)}}@media (hover:hover) and (prefers-reduced-motion:no-preference){.pXSMma_fishHitbox:hover .pXSMma_fish{animation:pXSMma_hero-fish-swim var(--ds-transition-duration-slow) var(--ds-ease-in-out)}}.pXSMma_body{flex-direction:column;gap:12px;min-width:0;display:flex;position:relative;overflow:visible}.pXSMma_body>*{z-index:1;position:relative}.pXSMma_body>.pXSMma_workspaceRow{z-index:10;align-items:center;min-width:0;padding-left:8px;display:flex}.pXSMma_workspace{max-width:min(100%,360px);min-height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border:none;border-radius:16px;align-items:center;gap:4px;padding:0 8px;font-size:13px;font-weight:500;line-height:20px;display:inline-flex}.pXSMma_workspace:not(:disabled):hover,.pXSMma_workspace[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover)}.pXSMma_workspace:disabled{cursor:default}.pXSMma_folder{color:var(--dsw-alias-label-primary);flex:none}.pXSMma_workspaceLabel{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.pXSMma_chevron{color:var(--dsw-alias-label-caption);flex:none}.pXSMma_modalInput{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);width:100%;height:44px;color:var(--dsw-alias-label-primary);background:0 0;border-radius:22px;outline:none;padding:7px 14px;font-size:14px;font-weight:400;line-height:22px}.pXSMma_modalInput::placeholder{color:var(--dsw-alias-label-caption)}.pXSMma_modalInput:disabled{color:var(--dsw-alias-label-dimmed)}.pXSMma_modalAction{min-width:72px}.pXSMma_modalError{color:var(--dsw-alias-state-error-primary);margin-top:8px;font-size:12px;line-height:18px}";
 		const tagId$7 = "@deepseek-ai/dsh-client-ui-conversation/HeroShell.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$7) + "]") === null) {
@@ -7095,23 +7437,23 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var HeroShell_module_css_default = {
-			"workspaceLabel": "pXSMma_workspaceLabel",
-			"headline": "pXSMma_headline",
+			"body": "pXSMma_body",
 			"chevron": "pXSMma_chevron",
 			"fish": "pXSMma_fish",
+			"fishHitbox": "pXSMma_fishHitbox",
+			"folder": "pXSMma_folder",
+			"headline": "pXSMma_headline",
+			"headlineText": "pXSMma_headlineText",
+			"hero-fish-swim": "pXSMma_hero-fish-swim",
+			"modalAction": "pXSMma_modalAction",
+			"modalError": "pXSMma_modalError",
+			"modalInput": "pXSMma_modalInput",
+			"previewBadge": "pXSMma_previewBadge",
+			"root": "pXSMma_root",
 			"stack": "pXSMma_stack",
 			"workspace": "pXSMma_workspace",
-			"modalInput": "pXSMma_modalInput",
-			"modalError": "pXSMma_modalError",
-			"modalAction": "pXSMma_modalAction",
-			"body": "pXSMma_body",
-			"hero-fish-swim": "pXSMma_hero-fish-swim",
-			"workspaceRow": "pXSMma_workspaceRow",
-			"folder": "pXSMma_folder",
-			"root": "pXSMma_root",
-			"fishHitbox": "pXSMma_fishHitbox",
-			"headlineText": "pXSMma_headlineText",
-			"previewBadge": "pXSMma_previewBadge"
+			"workspaceLabel": "pXSMma_workspaceLabel",
+			"workspaceRow": "pXSMma_workspaceRow"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/EmptyHero.js
@@ -7221,7 +7563,7 @@ window.__ModuleLoader__.load({
 		* @param props - see {@link HeroShellProps}.
 		* @returns the centered hero element tree.
 		*/
-		function HeroShell({ t, children }) {
+		function HeroShell({ t, renderSlot, children }) {
 			return (0, react_jsx_runtime.jsxs)("div", {
 				className: HeroShell_module_css_default.root,
 				children: [(0, react_jsx_runtime.jsxs)("div", {
@@ -7231,10 +7573,13 @@ window.__ModuleLoader__.load({
 						children: [
 							(0, react_jsx_runtime.jsx)("span", {
 								className: HeroShell_module_css_default.fishHitbox,
-								children: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.FishLogo, {
+								children: renderSlot("conversation.hero.brand.mark", {
 									size: 34,
 									className: HeroShell_module_css_default.fish
-								})
+								}, { fallback: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.FishLogo, {
+									size: 34,
+									className: HeroShell_module_css_default.fish
+								}) })
 							}),
 							(0, react_jsx_runtime.jsx)("span", {
 								className: HeroShell_module_css_default.headlineText,
@@ -7250,8 +7595,8 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css.mjs
-		const css$6 = ".wSkVaW_root{background:var(--dsw-alias-bg-base);--dsh-chat-content-width:748px;--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width) + 32px);--dsh-composer-side-clearance:16px;--dsh-composer-dock-inset:8px;flex-direction:column;min-width:0;height:100%;display:flex}.wSkVaW_header{border-bottom:1px solid #0000;flex:none;padding:12px 28px 0 20px;position:relative}.wSkVaW_header:after{content:\"\";z-index:0;background:var(--dsw-alias-border-l2);pointer-events:none;height:1px;position:absolute;bottom:1px;left:0;right:0}.wSkVaW_headerHidden{display:none}.wSkVaW_titleRow{align-items:center;gap:0;min-height:32px;display:flex}.wSkVaW_titleCluster{flex:1;align-items:center;gap:10px;min-width:0;display:flex}.wSkVaW_crumbs{white-space:nowrap;align-items:center;gap:4px;min-width:0;display:flex;overflow:hidden}.wSkVaW_crumbSeg{align-items:center;gap:4px;min-width:0;display:inline-flex}.wSkVaW_crumbSep{color:var(--dsw-alias-label-caption);font-size:14px;line-height:20px}.wSkVaW_crumb{max-width:220px;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:none;border-radius:12px;padding:4px 8px;font-size:14px;line-height:20px;overflow:hidden}.wSkVaW_crumb:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.wSkVaW_crumbCurrent{color:var(--dsw-alias-label-primary);cursor:default;font-weight:500}.wSkVaW_headerActions{flex:none;align-items:center;gap:8px;display:flex}.wSkVaW_headerUtilities{flex:none;align-items:center;gap:8px;margin-left:20px;display:flex}.wSkVaW_headerUtilities:empty{display:none}.wSkVaW_tabs{z-index:1;gap:36px;margin-top:4px;padding-left:8px;display:flex;position:relative}.wSkVaW_tab{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:0 0 11px;font-size:13px;font-weight:500;line-height:16px;position:relative}.wSkVaW_tab:after{content:\"\";background:0 0;border-radius:2px;height:2px;position:absolute;bottom:1px;left:0;right:0}.wSkVaW_tabActive{color:var(--dsw-alias-state-business-primary)}.wSkVaW_tabActive:after{background:var(--dsw-alias-state-business-primary)}.wSkVaW_viewArea{flex-direction:column;flex:1;min-height:0;display:flex}.wSkVaW_composerStack{--dsh-composer-stack-gap:6px;gap:var(--dsh-composer-stack-gap);flex-direction:column;display:flex}.wSkVaW_composerSeat{--dsh-composer-text-max-height:336px;flex-direction:column;flex:none;display:flex}.wSkVaW_root[data-phase=active]{overflow:hidden}.wSkVaW_root[data-phase=active] .wSkVaW_header{flex:none}.wSkVaW_scrollBody{scrollbar-gutter:stable;flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden auto}.wSkVaW_root[data-phase=active] .wSkVaW_viewArea{flex:1 0 auto;min-height:auto}.wSkVaW_root[data-phase=active] .wSkVaW_composerSeat{z-index:7;background:linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px, var(--dsw-alias-bg-base) 36px);position:sticky;bottom:0}.wSkVaW_scrollBody:has([data-conversation-composer-overlay]){scrollbar-gutter:auto;position:relative;overflow:hidden auto}.wSkVaW_scrollBody:has([data-conversation-composer-overlay])>[data-slot=conversation\\.session]>.wSkVaW_viewArea{flex:1 1 0;min-height:0;overflow:hidden}.wSkVaW_scrollBody:has([data-conversation-composer-overlay])>.wSkVaW_composerSeat{right:var(--dsh-scrollbar-width);position:absolute;bottom:0;left:0}.wSkVaW_composerHero{width:min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);z-index:1;align-self:center;gap:8px;padding-bottom:32px;position:relative}.wSkVaW_heroGlow{z-index:-1;aspect-ratio:1051/468;pointer-events:none;width:135.438%;position:absolute;bottom:92px;left:50%;transform:translate(-50%,50%)}.wSkVaW_heroWorkspaceRow{align-items:center;gap:2px;min-width:0;margin-top:4px;padding-left:20px;display:flex}.wSkVaW_root[data-phase=hero] .wSkVaW_scrollBody{justify-content:center;overflow-y:auto}.wSkVaW_root[data-phase=settling] .wSkVaW_composerSeat{visibility:hidden}";
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css.mjs
+		const css$6 = ".wSkVaW_root{background:var(--dsw-alias-bg-base);--dsh-chat-content-width:748px;--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width) + 32px);--dsh-composer-side-clearance:16px;--dsh-composer-dock-inset:8px;flex-direction:column;min-width:0;height:100%;display:flex}.wSkVaW_header{border-bottom:1px solid #0000;flex:none;padding:12px 28px 0 20px;position:relative}.wSkVaW_header:after{content:\"\";z-index:0;background:var(--dsw-alias-border-l2);pointer-events:none;height:1px;position:absolute;bottom:1px;left:0;right:0}.wSkVaW_headerHidden{display:none}.wSkVaW_titleRow{align-items:center;gap:0;min-height:32px;display:flex}.wSkVaW_titleCluster{flex:1;align-items:center;gap:10px;min-width:0;display:flex}.wSkVaW_crumbs{white-space:nowrap;align-items:center;gap:4px;min-width:0;display:flex;overflow:hidden}.wSkVaW_crumbSeg{align-items:center;gap:4px;min-width:0;display:inline-flex}.wSkVaW_crumbSep{color:var(--dsw-alias-label-caption);font-size:14px;line-height:20px}.wSkVaW_crumb{max-width:220px;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:none;border-radius:12px;padding:4px 8px;font-size:14px;line-height:20px;overflow:hidden}.wSkVaW_crumbSubagent{font-size:12px;line-height:18px}.wSkVaW_crumb:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.wSkVaW_crumbCurrent{color:var(--dsw-alias-label-primary);cursor:default;font-weight:500}.wSkVaW_headerActions{flex:none;align-items:center;gap:8px;display:flex}.wSkVaW_headerUtilities{flex:none;align-items:center;gap:8px;margin-left:20px;display:flex}.wSkVaW_headerUtilities:empty{display:none}.wSkVaW_tabs{z-index:1;gap:36px;margin-top:4px;padding-left:8px;display:flex;position:relative}.wSkVaW_tab{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:0 0 11px;font-size:13px;font-weight:500;line-height:16px;position:relative}.wSkVaW_tab:after{content:\"\";background:0 0;border-radius:2px;height:2px;position:absolute;bottom:1px;left:0;right:0}.wSkVaW_tabActive{color:var(--dsw-alias-state-business-primary)}.wSkVaW_tabActive:after{background:var(--dsw-alias-state-business-primary)}.wSkVaW_viewArea{flex-direction:column;flex:1;min-height:0;display:flex}.wSkVaW_composerStack{--dsh-composer-stack-gap:6px;gap:var(--dsh-composer-stack-gap);flex-direction:column;display:flex}.wSkVaW_composerSeat{--dsh-composer-text-max-height:336px;flex-direction:column;flex:none;display:flex}.wSkVaW_root[data-phase=active]{overflow:hidden}.wSkVaW_root[data-phase=active] .wSkVaW_header{flex:none}.wSkVaW_scrollBody{scrollbar-gutter:stable;flex-direction:column;flex:1;min-height:0;display:flex;overflow:hidden auto}.wSkVaW_root[data-phase=active] .wSkVaW_viewArea{flex:1 0 auto;min-height:auto}.wSkVaW_root[data-phase=active] .wSkVaW_composerSeat{z-index:7;background:linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px, var(--dsw-alias-bg-base) 36px);position:sticky;bottom:0}.wSkVaW_scrollBody:has([data-conversation-composer-overlay]){scrollbar-gutter:auto;position:relative;overflow:hidden auto}.wSkVaW_scrollBody:has([data-conversation-composer-overlay])>[data-slot=conversation\\.session]>.wSkVaW_viewArea{flex:1 1 0;min-height:0;overflow:hidden}.wSkVaW_scrollBody:has([data-conversation-composer-overlay])>.wSkVaW_composerSeat{right:var(--dsh-scrollbar-width);position:absolute;bottom:0;left:0}.wSkVaW_composerHero{width:min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);z-index:1;align-self:center;gap:8px;padding-bottom:32px;position:relative}.wSkVaW_heroGlow{z-index:-1;aspect-ratio:1051/468;pointer-events:none;width:135.438%;position:absolute;bottom:92px;left:50%;transform:translate(-50%,50%)}.wSkVaW_heroWorkspaceRow{align-items:center;gap:2px;min-width:0;margin-top:4px;padding-left:20px;display:flex}.wSkVaW_root[data-phase=hero] .wSkVaW_scrollBody{justify-content:center;overflow-y:auto}.wSkVaW_root[data-phase=settling] .wSkVaW_composerSeat{visibility:hidden}";
 		const tagId$6 = "@deepseek-ai/dsh-client-ui-conversation/ConversationRoot.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$6) + "]") === null) {
 			const tag = document.createElement("style");
@@ -7261,28 +7606,29 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ConversationRoot_module_css_default = {
-			"headerActions": "wSkVaW_headerActions",
-			"crumb": "wSkVaW_crumb",
-			"tab": "wSkVaW_tab",
-			"tabs": "wSkVaW_tabs",
-			"titleRow": "wSkVaW_titleRow",
 			"composerHero": "wSkVaW_composerHero",
-			"header": "wSkVaW_header",
-			"crumbCurrent": "wSkVaW_crumbCurrent",
-			"headerHidden": "wSkVaW_headerHidden",
-			"viewArea": "wSkVaW_viewArea",
-			"heroWorkspaceRow": "wSkVaW_heroWorkspaceRow",
-			"titleCluster": "wSkVaW_titleCluster",
+			"composerSeat": "wSkVaW_composerSeat",
 			"composerStack": "wSkVaW_composerStack",
-			"scrollBody": "wSkVaW_scrollBody",
+			"crumb": "wSkVaW_crumb",
+			"crumbCurrent": "wSkVaW_crumbCurrent",
 			"crumbSeg": "wSkVaW_crumbSeg",
 			"crumbSep": "wSkVaW_crumbSep",
-			"headerUtilities": "wSkVaW_headerUtilities",
-			"tabActive": "wSkVaW_tabActive",
-			"heroGlow": "wSkVaW_heroGlow",
-			"composerSeat": "wSkVaW_composerSeat",
+			"crumbSubagent": "wSkVaW_crumbSubagent",
 			"crumbs": "wSkVaW_crumbs",
-			"root": "wSkVaW_root"
+			"header": "wSkVaW_header",
+			"headerActions": "wSkVaW_headerActions",
+			"headerHidden": "wSkVaW_headerHidden",
+			"headerUtilities": "wSkVaW_headerUtilities",
+			"heroGlow": "wSkVaW_heroGlow",
+			"heroWorkspaceRow": "wSkVaW_heroWorkspaceRow",
+			"root": "wSkVaW_root",
+			"scrollBody": "wSkVaW_scrollBody",
+			"tab": "wSkVaW_tab",
+			"tabActive": "wSkVaW_tabActive",
+			"tabs": "wSkVaW_tabs",
+			"titleCluster": "wSkVaW_titleCluster",
+			"titleRow": "wSkVaW_titleRow",
+			"viewArea": "wSkVaW_viewArea"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/ConversationRoot.js
@@ -7381,7 +7727,10 @@ window.__ModuleLoader__.load({
 				className: clsx(ConversationRoot_module_css_default.composerStack, hero && ConversationRoot_module_css_default.composerHero),
 				children: [
 					hero && (0, react_jsx_runtime.jsx)(HeroGlow, { className: ConversationRoot_module_css_default.heroGlow }),
-					hero && (0, react_jsx_runtime.jsx)(HeroShell, { t }),
+					hero && (0, react_jsx_runtime.jsx)(HeroShell, {
+						t,
+						renderSlot
+					}),
 					hero && heroWorkspaceRow,
 					zone !== void 0 && renderSlot("conversation.input.dock", zone),
 					inputBar
@@ -7431,7 +7780,8 @@ window.__ModuleLoader__.load({
 				if (summary === void 0) break;
 				chain.unshift({
 					id: summary.id,
-					displayTitle: summary.displayTitle
+					displayTitle: summary.displayTitle,
+					subagent: summary.origin === "subagent"
 				});
 				if (summary.origin !== "subagent") break;
 				cursor = summary.parentId;
@@ -7468,20 +7818,29 @@ window.__ModuleLoader__.load({
 							"aria-label": t("session.hierarchy"),
 							children: [ancestry.map((summary, index) => {
 								const last = index === ancestry.length - 1;
+								const title = (0, react_jsx_runtime.jsx)("button", {
+									type: "button",
+									className: clsx(ConversationRoot_module_css_default.crumb, summary.subagent && ConversationRoot_module_css_default.crumbSubagent, last && ConversationRoot_module_css_default.crumbCurrent),
+									disabled: last,
+									onClick: () => {
+										open(summary.id);
+									},
+									children: summary.displayTitle
+								});
+								const lineage = last || summary.subagent;
+								const lineageOwner = {
+									lineageSessionId: summary.id,
+									displayTitle: summary.displayTitle,
+									...last ? {} : { openTitle: () => {
+										open(summary.id);
+									} }
+								};
 								return (0, react_jsx_runtime.jsxs)("span", {
 									className: ConversationRoot_module_css_default.crumbSeg,
 									children: [index > 0 && (0, react_jsx_runtime.jsx)("span", {
 										className: ConversationRoot_module_css_default.crumbSep,
 										children: "/"
-									}), (0, react_jsx_runtime.jsx)("button", {
-										type: "button",
-										className: clsx(ConversationRoot_module_css_default.crumb, last && ConversationRoot_module_css_default.crumbCurrent),
-										disabled: last,
-										onClick: () => {
-											open(summary.id);
-										},
-										children: summary.displayTitle
-									})]
+									}), lineage ? summary.subagent ? renderSlot("conversation.session.header.lineage", lineageOwner, { fallback: title }) : (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [title, renderSlot("conversation.session.header.lineage", lineageOwner, { fallback: null })] }) : title]
 								}, summary.id);
 							}), ancestry.length === 0 && (0, react_jsx_runtime.jsx)("span", {
 								className: ConversationRoot_module_css_default.crumbCurrent,
@@ -7547,7 +7906,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/DetailsPanel.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/DetailsPanel.module.css.mjs
 		const css$5 = ".ydkMvW_root{border-left:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);flex-direction:column;min-width:0;height:100%;display:flex}.ydkMvW_header{border-bottom:1px solid var(--dsw-alias-border-l2);justify-content:space-between;align-items:center;gap:8px;padding:14px 12px 12px;display:flex}.ydkMvW_title{color:var(--dsw-alias-label-primary);text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:500;line-height:20px;overflow:hidden}.ydkMvW_close{width:28px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.ydkMvW_close:hover{background:var(--dsw-alias-interactive-bg-hover)}.ydkMvW_body{flex:1;min-height:0;padding:12px 16px;overflow-y:auto}.ydkMvW_empty{color:var(--dsw-alias-label-tertiary);padding:8px 0;font-size:13px;line-height:20px}.ydkMvW_section{margin-bottom:16px}.ydkMvW_sectionLabel{color:var(--dsw-alias-label-secondary);margin-bottom:6px;font-size:12px;font-weight:500;line-height:18px}.ydkMvW_code{background:var(--dsw-alias-markdown-code-block);font-family:var(--ds-font-family-code);color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word;border-radius:12px;margin:0;padding:16px;font-size:13px;line-height:22px}.ydkMvW_code[data-error]{color:var(--dsw-alias-state-error-primary)}";
 		const tagId$5 = "@deepseek-ai/dsh-client-ui-conversation/DetailsPanel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$5) + "]") === null) {
@@ -7559,14 +7918,14 @@ window.__ModuleLoader__.load({
 		}
 		var DetailsPanel_module_css_default = {
 			"body": "ydkMvW_body",
-			"code": "ydkMvW_code",
-			"sectionLabel": "ydkMvW_sectionLabel",
-			"section": "ydkMvW_section",
 			"close": "ydkMvW_close",
-			"root": "ydkMvW_root",
+			"code": "ydkMvW_code",
+			"empty": "ydkMvW_empty",
 			"header": "ydkMvW_header",
-			"title": "ydkMvW_title",
-			"empty": "ydkMvW_empty"
+			"root": "ydkMvW_root",
+			"section": "ydkMvW_section",
+			"sectionLabel": "ydkMvW_sectionLabel",
+			"title": "ydkMvW_title"
 		};
 		//#endregion
 		//#region lib/types/client/skeleton/DetailsPanel.js
@@ -7840,7 +8199,8 @@ window.__ModuleLoader__.load({
 						stepStartTime: context.start?.event.time ?? null,
 						firstTokenTime: state.firstTokenTime ?? null,
 						completedTime: event.time
-					}
+					},
+					...event.data.interrupted === true ? { interrupted: true } : {}
 				};
 			}
 			const location = context.start?.location ?? context.matches.at(-1)?.location;
@@ -8108,6 +8468,76 @@ window.__ModuleLoader__.load({
 		function orderedVisible(nodes) {
 			return nodes.filter((node) => node.visibility === "visible").sort((left, right) => left.anchorSeq - right.anchorSeq || left.key.localeCompare(right.key));
 		}
+		function referenceMessageSeq(node) {
+			const candidate = node;
+			return candidate.kind === "user" || candidate.kind === "steering" ? candidate.data.seq : void 0;
+		}
+		function followingRecall(node) {
+			const candidate = node;
+			if (candidate.kind !== "context") return void 0;
+			return {
+				messageSeq: candidate.data.seq - 1,
+				labels: (0, _deepseek_ai_dsh_client_runtime_client.sessionRecallLabels)(candidate.data.source)
+			};
+		}
+		function withReferenceLabels(node, labels) {
+			const candidate = node;
+			if (candidate.kind !== "user" && candidate.kind !== "steering") return node;
+			const current = candidate.data.referenceLabels ?? EMPTY_KEYS;
+			const hasLabels = Object.hasOwn(candidate.data, "referenceLabels");
+			if (sameReferences$1(current, labels) && hasLabels === labels.length > 0) return node;
+			const data = { ...candidate.data };
+			if (labels.length === 0) delete data.referenceLabels;
+			else data.referenceLabels = labels;
+			return {
+				...candidate,
+				data
+			};
+		}
+		/** Associates a direct message with the sourced recall event that immediately follows it. */
+		var ReferenceLabelProjector = class {
+			messagesBySeq = /* @__PURE__ */ new Map();
+			labelsByMessageSeq = /* @__PURE__ */ new Map();
+			replace(nodes) {
+				this.messagesBySeq.clear();
+				this.labelsByMessageSeq.clear();
+				for (const node of nodes) {
+					const messageSeq = referenceMessageSeq(node);
+					if (messageSeq !== void 0) this.messagesBySeq.set(messageSeq, node.key);
+					const recall = followingRecall(node);
+					if (recall !== void 0 && recall.labels.length > 0) this.labelsByMessageSeq.set(recall.messageSeq, recall.labels);
+				}
+				return nodes.map((node) => {
+					const messageSeq = referenceMessageSeq(node);
+					return messageSeq === void 0 ? node : withReferenceLabels(node, this.labelsByMessageSeq.get(messageSeq) ?? EMPTY_KEYS);
+				});
+			}
+			apply(upserts, store) {
+				const byKey = new Map(upserts.map((node) => [node.key, node]));
+				const affected = /* @__PURE__ */ new Set();
+				for (const node of upserts) {
+					const messageSeq = referenceMessageSeq(node);
+					if (messageSeq !== void 0) {
+						this.messagesBySeq.set(messageSeq, node.key);
+						affected.add(messageSeq);
+					}
+					const recall = followingRecall(node);
+					if (recall === void 0) continue;
+					const current = this.labelsByMessageSeq.get(recall.messageSeq);
+					if (recall.labels.length === 0) this.labelsByMessageSeq.delete(recall.messageSeq);
+					else this.labelsByMessageSeq.set(recall.messageSeq, current !== void 0 && sameReferences$1(current, recall.labels) ? current : recall.labels);
+					affected.add(recall.messageSeq);
+				}
+				for (const messageSeq of affected) {
+					const key = this.messagesBySeq.get(messageSeq);
+					if (key === void 0) continue;
+					const node = byKey.get(key) ?? store.get(key);
+					if (node === void 0) continue;
+					byKey.set(key, withReferenceLabels(node, this.labelsByMessageSeq.get(messageSeq) ?? EMPTY_KEYS));
+				}
+				return [...byKey.values()];
+			}
+		};
 		const EMPTY_CONTRIBUTION = {
 			anchorSeq: 0,
 			nodes: EMPTY_LIST,
@@ -8298,6 +8728,7 @@ window.__ModuleLoader__.load({
 			store = new MutableChatNodeStore();
 			locations = new MutableChatLocationIndex();
 			legacy = new LegacySliceBuilder();
+			referenceLabels = new ReferenceLabelProjector();
 			order = EMPTY_KEYS;
 			empty;
 			constructor() {
@@ -8307,28 +8738,30 @@ window.__ModuleLoader__.load({
 				});
 			}
 			replace(input) {
-				this.store.replace(input.nodes);
-				this.order = orderedVisible(input.nodes).map((node) => node.key);
+				const nodes = this.referenceLabels.replace(input.nodes);
+				this.store.replace(nodes);
+				this.order = orderedVisible(nodes).map((node) => node.key);
 				this.locations.rebuild(this.order, this.store);
-				return this.snapshot(input.timeline, this.legacy.replace(input.nodes, input.timeline));
+				return this.snapshot(input.timeline, this.legacy.replace(nodes, input.timeline));
 			}
 			apply(input) {
+				const upserts = this.referenceLabels.apply(input.upserts, this.store);
 				let structural = false;
 				const contentOnly = [];
-				for (const node of input.upserts) {
+				for (const node of upserts) {
 					const previous = this.store.get(node.key);
 					const nodeStructural = previous === void 0 || previous.anchorSeq !== node.anchorSeq || previous.visibility !== node.visibility || locationIdentity(previous.location) !== locationIdentity(node.location);
 					structural ||= nodeStructural;
 					if (!nodeStructural) contentOnly.push(node);
 				}
-				this.store.upsert(input.upserts);
+				this.store.upsert(upserts);
 				if (structural) {
 					const next = orderedVisible(this.store.values()).map((node) => node.key);
 					this.order = sameReferences$1(this.order, next) ? this.order : next;
 					this.locations.rebuild(this.order, this.store);
 				}
 				this.locations.touch(contentOnly);
-				return this.snapshot(input.timeline, this.legacy.apply(input.upserts, input.timeline));
+				return this.snapshot(input.timeline, this.legacy.apply(upserts, input.timeline));
 			}
 			snapshot(timeline, legacy = this.legacy.replace(EMPTY_LIST, timeline)) {
 				return {
@@ -9046,9 +9479,6 @@ window.__ModuleLoader__.load({
 			if (location?.kind !== "turn" && location?.kind !== "step") return 0;
 			return location.turn.steps.at(-1)?.step ?? 0;
 		}
-		function retryTurn(event) {
-			return event.type === "llm/retry" || event.type === "llm/retry-started" ? event.data.turn : void 0;
-		}
 		function failureFrom(match) {
 			if (match.event.type !== "turn/end" || match.event.data.reason.kind !== "error") return void 0;
 			const failure = match.event.data.reason.error;
@@ -9064,14 +9494,16 @@ window.__ModuleLoader__.load({
 			if (end?.event.type !== "turn/end") return void 0;
 			const failure = failureFrom(end);
 			if (failure === void 0) return void 0;
-			const turn = end.event.data.turn;
 			return {
-				turn,
-				hidden: context.matches.some((match) => retryTurn(match.event) === turn),
+				turn: end.event.data.turn,
 				failure
 			};
 		}
-		/** Terminal turn failure Definition, suppressed when the turn owns a retry chain. */
+		/**
+		* Terminal turn failure Definition. Retries run inside the failing turn, so the
+		* turn's `llm/retry` history never suppresses this terminal row; the model-retry
+		* node renders that history separately.
+		*/
 		const turnErrorDefinition = {
 			kind: "turn-error",
 			target: "chat",
@@ -9084,29 +9516,18 @@ window.__ModuleLoader__.load({
 					id: String(event.data.turn),
 					role: "update"
 				};
-				const turn = retryTurn(event);
-				return turn === void 0 ? null : {
-					id: String(turn),
-					role: "update"
-				};
+				return null;
 			},
 			start: (_context, match) => {
 				if (match.event.type !== "turn/start") throw new Error("turn-error start requires turn/start");
-				return {
-					turn: match.event.data.turn,
-					hidden: false
-				};
+				return { turn: match.event.data.turn };
 			},
 			update: (context, match) => {
 				const failure = failureFrom(match);
-				if (failure !== void 0) return {
+				return failure === void 0 ? context.state : {
 					...context.state,
 					failure
 				};
-				return retryTurn(match.event) === context.state.turn ? {
-					...context.state,
-					hidden: true
-				} : context.state;
 			},
 			buildViewNode: (context) => {
 				const state = context.state ?? fallbackState(context);
@@ -9121,9 +9542,7 @@ window.__ModuleLoader__.load({
 					message: failure.message,
 					...failure.code === void 0 ? {} : { code: failure.code }
 				};
-				if (!state.hidden) return chatNode(context, "turn-error", node.seq, node);
-				const current = context.current.get("chat");
-				return current === void 0 || current === null ? null : chatNode(context, "turn-error", node.seq, node, { visibility: "hidden" });
+				return chatNode(context, "turn-error", node.seq, node);
 			}
 		};
 		/**
@@ -9397,7 +9816,7 @@ window.__ModuleLoader__.load({
 			}, [intervalFrames]);
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/accessibility.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/accessibility.module.css.mjs
 		const css$4 = ".hXDBwq_visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}";
 		const tagId$4 = "@deepseek-ai/dsh-client-ui-conversation/accessibility.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$4) + "]") === null) {
@@ -9409,7 +9828,7 @@ window.__ModuleLoader__.load({
 		}
 		var accessibility_module_css_default = { "visuallyHidden": "hXDBwq_visuallyHidden" };
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/ReasoningRow.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/ReasoningRow.module.css.mjs
 		const css$3 = ".QWLzlG_root{flex-direction:column;display:flex}.QWLzlG_row{position:relative;overflow:hidden}.QWLzlG_root[data-state=running] .QWLzlG_row:after{content:\"\";inset-block:0;background:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%, transparent 100%);pointer-events:none;width:300px;animation:2.6s ease-out infinite QWLzlG_dsh-reasoning-row-sweep;position:absolute;left:0}@keyframes QWLzlG_dsh-reasoning-row-sweep{0%{left:-300px}90%,to{left:100%}}.QWLzlG_leading{flex-shrink:0}.QWLzlG_chevron{color:var(--dsw-alias-label-secondary)}.QWLzlG_title{font-weight:400}.QWLzlG_separator{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}.QWLzlG_summary{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}.QWLzlG_summary[data-follow-end]{text-overflow:clip}.QWLzlG_thinkBody{color:var(--dsw-alias-label-tertiary);white-space:pre-wrap;word-break:break-word;padding:4px 0 4px 22px;font-size:14px;line-height:24px}@media (prefers-reduced-motion:reduce){.QWLzlG_root[data-state=running] .QWLzlG_row:after{animation:none}}";
 		const tagId$3 = "@deepseek-ai/dsh-client-ui-conversation/ReasoningRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$3) + "]") === null) {
@@ -9420,15 +9839,15 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ReasoningRow_module_css_default = {
-			"thinkBody": "QWLzlG_thinkBody",
-			"row": "QWLzlG_row",
-			"root": "QWLzlG_root",
-			"separator": "QWLzlG_separator",
 			"chevron": "QWLzlG_chevron",
 			"dsh-reasoning-row-sweep": "QWLzlG_dsh-reasoning-row-sweep",
+			"leading": "QWLzlG_leading",
+			"root": "QWLzlG_root",
+			"row": "QWLzlG_row",
+			"separator": "QWLzlG_separator",
 			"summary": "QWLzlG_summary",
-			"title": "QWLzlG_title",
-			"leading": "QWLzlG_leading"
+			"thinkBody": "QWLzlG_thinkBody",
+			"title": "QWLzlG_title"
 		};
 		//#endregion
 		//#region lib/types/client/chat/ReasoningRow.js
@@ -9502,8 +9921,8 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/AssistantMarkdown.module.css.mjs
-		const css$2 = ".Sxvs8a_root{color:var(--dsw-alias-label-primary);flex-direction:column;font-size:16px;line-height:28px;display:flex}.Sxvs8a_body{flex-direction:column;gap:16px;display:flex}.Sxvs8a_stopped{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-tertiary);border-radius:6px;align-self:flex-start;padding:0 6px;font-size:11px;line-height:18px}.Sxvs8a_actions{margin-top:16px;margin-left:-6px}";
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/AssistantMarkdown.module.css.mjs
+		const css$2 = ".Sxvs8a_root{color:var(--dsw-alias-label-primary);flex-direction:column;font-size:16px;line-height:28px;display:flex}.Sxvs8a_body{flex-direction:column;gap:16px;display:flex}.Sxvs8a_body .md-table-wide{--dsh-table-spare:max(0px, calc((100cqw - var(--dsh-chat-content-width)) / 2));--dsh-table-lead:calc(var(--dsh-table-spare) + min(var(--dsh-chat-content-width), 100cqw) - 100%);box-sizing:border-box;width:calc(100% + var(--dsh-table-lead) + var(--dsh-table-spare));max-width:none;margin-left:calc(-1 * var(--dsh-table-lead));padding-left:var(--dsh-table-lead)}.Sxvs8a_stopped{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-tertiary);border-radius:6px;align-self:flex-start;padding:0 6px;font-size:11px;line-height:18px}.Sxvs8a_actions{margin-top:16px;margin-left:-6px}";
 		const tagId$2 = "@deepseek-ai/dsh-client-ui-conversation/AssistantMarkdown.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$2) + "]") === null) {
 			const tag = document.createElement("style");
@@ -9513,16 +9932,15 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var AssistantMarkdown_module_css_default = {
+			"actions": "Sxvs8a_actions",
 			"body": "Sxvs8a_body",
 			"root": "Sxvs8a_root",
-			"stopped": "Sxvs8a_stopped",
-			"actions": "Sxvs8a_actions"
+			"stopped": "Sxvs8a_stopped"
 		};
 		//#endregion
 		//#region lib/types/client/chat/AssistantMarkdown.js
 		/** Reasoning block as the Think variant summary row (figma 39:28304). */
-		const AssistantMarkdown = (0, react.memo)(function AssistantMarkdown({ blocks, streaming, interrupted, loadImage, mentions, t }) {
-			const imageLoader = loadImage ?? (() => Promise.reject(new Error(t("image.serviceUnavailable"))));
+		const AssistantMarkdown = (0, react.memo)(function AssistantMarkdown({ blocks, streaming, interrupted, renderMessageImages, mentions, t }) {
 			const codeLabels = (0, react.useMemo)(() => ({
 				copyLabel: t("copy"),
 				copiedLabel: t("copied")
@@ -9558,12 +9976,10 @@ window.__ModuleLoader__.load({
 							group.push(next);
 							i += 1;
 						}
-						rendered.push((0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_attachment.ImageGallery, {
-							images: group,
-							load: imageLoader,
-							align: "start",
-							labels: messageImageLabels(t)
-						}, start));
+						rendered.push((0, react_jsx_runtime.jsx)(react.Fragment, { children: renderMessageImages({
+							images: group.map(({ attachment }) => ({ attachment })),
+							align: "start"
+						}) }, start));
 						break;
 					}
 					case "tool-call": break;
@@ -9589,7 +10005,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region lib/types/client/chat/AssistantNodeView.js
 		/** Streaming, settled, and interrupted Assistant states share one keyed renderer instance. */
-		const AssistantNodeView = (0, react.memo)(function AssistantNodeView({ node, useTurnData, openFile, loadImage, fileMentions, t }) {
+		const AssistantNodeView = (0, react.memo)(function AssistantNodeView({ node, useTurnData, openFile, renderMessageImages, fileMentions, t }) {
 			const data = node.data;
 			const turn = node.location.kind === "turn" || node.location.kind === "step" ? node.location.turn : void 0;
 			const tail = useTurnData("turn-tail");
@@ -9612,13 +10028,13 @@ window.__ModuleLoader__.load({
 				blocks: data.blocks,
 				streaming: data.status === "running",
 				interrupted: data.status === "interrupted",
-				loadImage,
+				renderMessageImages,
 				mentions,
 				t
 			});
 		});
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/GenericCommandCard.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/GenericCommandCard.module.css.mjs
 		const css$1 = "._Xvjua_root{flex-direction:column;display:flex}._Xvjua_row{position:relative;overflow:hidden}._Xvjua_root[data-state=running] ._Xvjua_row:after{content:\"\";inset-block:0;background:linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%, transparent 100%);pointer-events:none;width:300px;animation:2.6s ease-out infinite _Xvjua_dsh-command-row-sweep;position:absolute;left:0}@keyframes _Xvjua_dsh-command-row-sweep{0%{left:-300px}90%,to{left:100%}}._Xvjua_leading{flex-shrink:0}._Xvjua_chevron{color:var(--dsw-alias-label-secondary)}._Xvjua_title{font-weight:400}._Xvjua_separator{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}._Xvjua_summary{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}._Xvjua_summary[data-error],._Xvjua_body[data-error]{color:var(--dsw-alias-state-error-primary)}._Xvjua_body{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-markdown-code-block);max-height:260px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-markdown-code-block-small);white-space:pre-wrap;border-radius:12px;margin:4px 0 4px 4px;padding:12px 16px;overflow:auto}@media (prefers-reduced-motion:reduce){._Xvjua_root[data-state=running] ._Xvjua_row:after{animation:none}}";
 		const tagId$1 = "@deepseek-ai/dsh-client-ui-conversation/GenericCommandCard.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
@@ -9629,15 +10045,15 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var GenericCommandCard_module_css_default = {
-			"root": "_Xvjua_root",
-			"separator": "_Xvjua_separator",
-			"leading": "_Xvjua_leading",
-			"chevron": "_Xvjua_chevron",
-			"summary": "_Xvjua_summary",
 			"body": "_Xvjua_body",
+			"chevron": "_Xvjua_chevron",
+			"dsh-command-row-sweep": "_Xvjua_dsh-command-row-sweep",
+			"leading": "_Xvjua_leading",
+			"root": "_Xvjua_root",
 			"row": "_Xvjua_row",
-			"title": "_Xvjua_title",
-			"dsh-command-row-sweep": "_Xvjua_dsh-command-row-sweep"
+			"separator": "_Xvjua_separator",
+			"summary": "_Xvjua_summary",
+			"title": "_Xvjua_title"
 		};
 		//#endregion
 		//#region lib/types/client/chat/GenericCommandCard.js
@@ -9761,7 +10177,7 @@ window.__ModuleLoader__.load({
 			return blocks.flatMap((block) => block.kind === "text" ? [block.text] : []).join("");
 		}
 		//#endregion
-		//#region \0dsh-css:/virtual/deepseek-harness/packages/client/ui-conversation/src/client/chat/TurnTailNodeView.module.css.mjs
+		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/chat/TurnTailNodeView.module.css.mjs
 		const css = ".osXY9a_root{flex-direction:column;gap:16px;display:flex}.osXY9a_actions{margin-left:-6px}";
 		const tagId = "@deepseek-ai/dsh-client-ui-conversation/TurnTailNodeView.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
@@ -9772,8 +10188,8 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var TurnTailNodeView_module_css_default = {
-			"root": "osXY9a_root",
-			"actions": "osXY9a_actions"
+			"actions": "osXY9a_actions",
+			"root": "osXY9a_root"
 		};
 		//#endregion
 		//#region lib/types/client/chat/TurnTailNodeView.js
@@ -10056,6 +10472,10 @@ window.__ModuleLoader__.load({
 						kind: "list",
 						scope: "session"
 					},
+					"conversation.hero.brand.mark": {
+						kind: "single",
+						scope: "root"
+					},
 					"conversation.hero.workspace": {
 						kind: "single",
 						scope: "root"
@@ -10108,6 +10528,10 @@ window.__ModuleLoader__.load({
 				name: "conversation.session.header",
 				locale: NS,
 				children: {
+					"conversation.session.header.lineage": {
+						kind: "single",
+						scope: "session"
+					},
 					"conversation.session.header.actions": {
 						kind: "list",
 						scope: "session"
@@ -10129,6 +10553,10 @@ window.__ModuleLoader__.load({
 				name: "conversation.composer.bar",
 				locale: NS,
 				children: {
+					"conversation.input.attachments": {
+						kind: "single",
+						scope: "session-maybe"
+					},
 					"conversation.input.plan": {
 						kind: "single",
 						scope: "session"
@@ -10181,6 +10609,7 @@ window.__ModuleLoader__.load({
 							inputTriggers.toggleSource("command", {
 								trigger: "/",
 								query: "",
+								quoted: false,
 								position: snapshot.draft.slice(0, selection.start).trim() === "" ? "leading" : "inline",
 								span: {
 									...selection,
@@ -10217,11 +10646,17 @@ window.__ModuleLoader__.load({
 				order: 0,
 				label: () => t("view.chat"),
 				locale: NS,
-				children: { "conversation.chat.node": {
-					kind: "keyed",
-					scope: "session",
-					inject: CHAT_NODE_INJECT
-				} },
+				children: {
+					"conversation.chat.node": {
+						kind: "keyed",
+						scope: "session",
+						inject: CHAT_NODE_INJECT
+					},
+					"conversation.message.images": {
+						kind: "single",
+						scope: "session"
+					}
+				},
 				store: chatStore,
 				inject: (sessionId, actions) => {
 					const conversation = concreteConversation(ctx);
@@ -10234,7 +10669,7 @@ window.__ModuleLoader__.load({
 						fileMentions: (owner) => ctx.get("chatFileMentions")?.forClosing(owner),
 						openFile: (path) => {
 							const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd;
-							workspaces.openPath((0, _deepseek_ai_dsh_client_runtime_client.resolveWorkspacePath)(cwd, path)).catch(() => {});
+							return workspaces.openPath((0, _deepseek_ai_dsh_client_runtime_client.resolveWorkspacePath)(cwd, path));
 						},
 						loadOlder: () => scoped.loadOlder(),
 						loadImage: (attachment) => conversation.resolveImage(sessionId, attachment),

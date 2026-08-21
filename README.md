@@ -6,7 +6,7 @@
 
 在原有基础上加了以下功能：
 
-1、滑动变阻器：点模型芯片弹出鲸鱼滑块，六档思考强度各配 24 帧动画，鲸鱼就是滑块，拖或点轨道换档；别的模型自动适配档位，「高级 >」菜单能自由切模型和推理档位。
+1、滑动变阻器：点模型芯片弹出鲸鱼滑块，只显示**当前模型**的 `Off / Low / High / Max` 思考强度，鲸鱼就是滑块，拖或点轨道换档；模型身份在「高级 > 模型」中单独切换，新增模型不会把轨道拉成长串。
 
 2、余额跳转：右上角余额徽章可点击，每完成一次任务刷新，直达 DeepSeek 开放平台充值页。
 
@@ -16,7 +16,7 @@
 
 5、移动端访问：开关一开就能局域网访问，设置页直接出地址和二维码，手机打开自动切 App 式布局，和桌面同一份配置和会话。
 
-6、文件与图片：任意文件/文件夹上传，存会话目录、删会话一并清掉；卡片显示真实 macOS 图标；图片原样显示，纯文本模型走 vision MCP 桥。
+6、文件与图片：任意文件/文件夹上传，存会话目录、删会话一并清掉；卡片显示真实 macOS 图标；官方 Vision 模型原生接收图片并优先复用 DeepSeek Files API，失败时自动回退内联图片。
 
 7、其他：@ 提及其他会话获取上下文、历史 Prompt 时间轴、ESC 后原位编辑重发、会话/工作区/归档批量彻底删除、设置里直接编辑全局约束规则；启动动画、托盘、单实例、路径自愈都在；回植了 persistent Bash 修复，命令不再白等三秒半。
 
@@ -28,12 +28,12 @@
 - DSH 数据沿用 `~/.dsh`：你在终端里配好的模型、会话、预设原样可用；
 - 设置面板新增「全局约束规则」分类（设置 → 全局约束规则）：文本框直接读写 dsh 原生注入每个会话的 `$DSH_HOME/AGENTS.md`（默认 `~/.dsh/AGENTS.md`），打开即载入现有内容，保存后新会话生效。实现为一个随应用打包的双面插件（`packages/dsh-desktop`：宿主 Typert 远程服务 + 客户端设置分类），通过 `--patch`（`assets/desktop.patch.yml` 的 insert 形式）挂载，并在启动时链接进 profile 的模块回退目录。
 另：桌面端会话页右上角的余额徽章现在可以直接点击，一键跳转 DeepSeek 开放平台充值页（platform.deepseek.com/top_up），刷新按钮不受影响；徽章样式与「Session log」按钮完全一致（透明底、细白描边胶囊）。
-- 输入区的模型选择器默认保持系统原生样式（DeepSeek Honeycomb 风格芯片，只显示模型与推理档位）；**点击芯片**才弹出鲸鱼思考强度变阻器。DeepSeek 模型为固定六档 `Flash·Off → Flash·High → Flash·Max → V4 Pro·Off → V4 Pro·High → V4 Pro·Max`（六档各一套透明底 24 帧动画：Flash 保持轻快，Pro 的动作和表情更有力量）；**换成其他商家模型时，档位自动按该模型的实际思考档位生成**（几个档就几档、圆点数量同步、拖动只调该模型的思考强度），无档位的模型只显示芯片并提示不支持调节。芯片始终显示真实模型名与当前档位。**鲸鱼就是滑块拇指**：游在轨道里、位置就是当前档位，按住鲸鱼拖动即可切换档位（点击轨道空白处也可直接跳档）；档位越高浮游/摆尾越快。轨道填充为蓝系渐变（无紫色），满档时填充到头；填充内有随档位增多的星尘粒子和流光扫过；档位圆点刻度排在轨道内部底部一行（走过的点亮、未走过的暗，鲸鱼浮在上方不遮挡）。弹层头部有「高级 >」入口——点击切换到高级模式：两行菜单（「模型 / 思考强度」行 + 分隔线 + 高级分区），进入后可切换任意厂商模型与推理档位；高级菜单底部「思考强度滑块」一行可切回。点击外部或 Esc 收起。动画遵循系统“减少动态效果”设置；桌面窗口与手机端使用同一组本地同源素材。
-- 输入框支持 `@会话` 提及：输入 `@` 弹出触发菜单（「会话」组，按标题 / 会话 id / 工作目录过滤），选中后插入以会话标题为标签的 chip；发送时 chip 序列化为规范的 `@[标题](dsh-session:<base64url id>)` 提及，宿主在 `agent/pre-step` 边界识别提及，并把被引用会话的当前上下文快照作为只读 recall 上下文注入本轮——与斜杠调用 Skill 同一条管线（客户端 `inputTriggers` 注册 `@` 触发源 + 宿主 pre-step 注入），复用 rc.6 内置的 `session-reference` 解析器（候选排行 / 快照预算 / 渲染）与会话查询服务。
+- 输入区的模型选择器默认保持系统原生样式（只显示模型与推理档位）；**点击芯片**才弹出鲸鱼思考强度变阻器。轨道只反映当前模型实际发布的思考档位：官方 rc.2 的三个 DeepSeek 模型均为 `Off → Low → High → Max` 四档，切换模型则在「高级 > 模型」完成。`DeepSeek-V4-Flash-Vision-Exp` 与普通 Flash 目前共用轻快鲸鱼动画，界面仍明确显示 Vision；Pro 使用更有力量的图集。Low 暂复用对应 High 的 24 帧序列并减慢播放，后续可单独补素材，而无需改变交互。**鲸鱼就是滑块拇指**：游在轨道里、位置就是当前档位，按住鲸鱼拖动或点击轨道空白处即可切换；档位越高浮游/摆尾越快。换成其他厂商模型时也只按当前模型的实际档位生成刻度；无档位模型只显示芯片并提示不支持调节。点击外部或 Esc 收起，动画遵循系统“减少动态效果”设置；桌面与手机端使用同一组本地同源素材。
+- 输入框支持 `@会话` 提及：输入 `@` 弹出触发菜单（「会话」组，按标题 / 会话 id / 工作目录过滤），选中后插入以会话标题为标签的 chip；发送时 chip 序列化为规范的 `@[标题](dsh-session:<base64url id>)` 提及，宿主在 `agent/pre-step` 边界识别提及，并把被引用会话的当前上下文快照作为只读 recall 上下文注入本轮——与斜杠调用 Skill 同一条管线，复用 rc.2 的 `session-reference` 与会话查询服务。
 - 会话页左缘（抽屉右侧）提供「历史 Prompt 时间轴」：一条 Prompt 对应一根左端对齐的 6×1px 细横线，8px 节距，时间从上向下推进（最新在最下）。鼠标移动时，邻近横线只沿水平方向按像素距离形成高斯鱼眼，最接近光标的横线约伸长至 26px，线条始终保持 1px 粗；右侧气泡不显示标题、日期、序号、箭头或描边，只显示最多四行 Prompt 正文并与当前横线垂直居中。点击横线会定位到会话中的原始用户消息，**不会再填充输入框**；目标尚未进入当前历史窗口时会自动逐页加载，找到后居中滚动。聊天上滑接近顶部会自动加载更早消息，顶部不再显示需要反复点击的「加载更早」按钮。宿主只在根 agent 的 `agent/pre-step` 接受边界记录真实用户 Prompt，最多保留 100 条、相同文本自动去重；历史保存在 `$DSH_HOME/desktop/prompt-history.json`（权限 600），桌面和手机端共享，不进入仓库或安装包。v1.3.2 起每条记录带会话归属，时间轴**只显示当前会话**的 Prompt；v1.4.2 起新记录同时保存稳定消息 ID，旧记录用同文本与最接近时间兼容定位。
-- 发送图片：会话里**以图片本体显示**（桌面端走 shell 原生图库渲染，手机端 `/mobile` 同样渲染），多张图片全部保留；愿景桥的描述文字（`[The user attached…]`）只发给模型、不再出现在聊天记录里。实现：`scripts/apply-vision-bridge.mjs` 在准入时保留 image 块并附描述，在切换模型时认可已桥接图片，在模型请求边界剥离 image 块，并在聊天记录显示层过滤描述块。
-- 任意文件/文件夹上传（v1.3.0）：输入框「+」是纯上传菜单（上传文件 / 上传文件夹，选完自动收起；命令仍用 `/` 输入），粘贴（Cmd+V）、拖放、菜单三条路径都能上传任何类型文件。文本（txt/md/代码 ≤512KB）内容直接内联给模型；二进制（PDF/Word/Excel/压缩包/pkg…）与大文本在发送时保存到**当前会话目录** `~/.dsh/sessions/<工作区>/<会话ID>/uploads/`，Agent 拿到精确路径用工具读取，**删除会话时随日志一并递归删除**（归档保留）。上传文件夹走 Electron 主进程原生目录选择器（无 macOS 自动化权限要求），整个文件夹递归复制、保留目录结构（上限 2000 文件/200MB/深度 8），消息里是一个 📁 文件夹附件。消息协议新增 `file` 块（含 `fileKind: folder`）：文件/文件夹在消息里以**图片同款卡片**展示，卡片显示**真实 macOS 系统图标**（主进程 `app.getFileIcon` → data URL 按路径缓存；无路径的内联文本回退扩展名 emoji）。图片分类带扩展名双校验（pkg/dmg 等异常 MIME 不会误入图片通道），二进制附件提示明确标注"不是图片、勿用看图工具"。ESC 停止生成后点最后一条消息的铅笔，可像 Codex 一样在消息**原位**编辑：`Enter` 重发、`Shift+Enter` 换行、`Esc` 取消，也可使用取消/发送按钮；重发通过当前会话的标准输入状态机完成。实现：`patches/` + `scripts/apply-upload-enhancements.mjs`（三个上游包整文件补丁）、`packages/dsh-desktop` 插件、`main/main.mjs` 主进程桥。
-- 会话行菜单支持“删除会话”：二次确认后停止当前根会话（若正在运行）、从工作区与归档记账中解绑，并永久删除持久日志。该能力来自仓库本地构建；桌面打包前由 `scripts/sync-monorepo-overrides.mjs` 覆盖相关发布依赖，并由 `scripts/apply-session-registry-remove-fix.mjs` 给 rc.6 的 agent/session 注册表补上可重建的强制移除能力，避免源码已改而 `.app` 仍运行旧包，也避免日志删除后 live 注册残留成“幽灵会话”。
+- 发送图片：会话里**以图片本体显示**（桌面端走官方附件插槽，手机端 `/mobile` 同样渲染），多张图片全部保留。选择 `DeepSeek-V4-Flash-Vision-Exp` 时，rc.2 运行时自动预处理尺寸/格式，优先通过 DeepSeek Files API 上传和复用，上传失败或超时则用相同请求图片回退为内联 base64；普通 Flash/Pro 属于文本模型，发送前会明确提示不支持图片。旧版 vision MCP 委派不再位于发送主链路。
+- 任意文件/文件夹上传（v1.3.0）：输入框「+」是纯上传菜单（上传文件 / 上传文件夹，选完自动收起；命令仍用 `/` 输入），粘贴（Cmd+V）、拖放、菜单三条路径都能上传任何类型文件。文本（txt/md/代码 ≤512KB）内容直接内联给模型；二进制与大文本保存在**当前会话目录**，Agent 拿到精确路径用工具读取。文件/文件夹使用桌面 `file` 元数据块和真实 macOS 图标，绝不会误入图片通道。ESC 停止生成后点最后一条消息的铅笔，可像 Codex 一样在消息**原位**编辑：`Enter` 重发、`Shift+Enter` 换行、`Esc` 取消。实现：`patches/` 中 rc.2 conversation/apiproxy 两个整文件覆盖、`packages/dsh-desktop` 插件与 `main/main.mjs` 主进程桥。
+- rc.2 主侧边栏遵循官方归档生命周期；需要永久清理时使用设置里的「归档管理」，支持单条或批量删除持久会话。桌面插件优先走宿主可用的删除能力，缺少旧版 ApiProxy 端点时回退到 workspace registry 的安全清理路径。
 - 删除工作区（分组）连带永久删除会话（v1.3.1）：删除确认弹窗明确警告「将永久删除其中的全部会话与聊天记录，不可恢复，文件夹本身保留」。宿主先捕获该工作区的会话记账，再逐个完成与单会话删除同一套清理（停活跃 agent → 删除持久日志 → 清除 live 注册），单个会话失败只告警、不回滚已提交的工作区删除；被删会话不再落入「未分组」，删除后客户端立即刷新会话基线。
 - 归档管理页支持删除（v1.3.1，v1.3.9 重做）：单个 + 多选批量**彻底永久删除**（会话记录、日志文件、工作区与归档记账全部清除）。单选删除的二次确认内联在该行原位（「确认删除 / 取消」与删除按钮放一起），多选批量删除在顶部批量条二次确认；宿主每个会话走 ApiProxy 的 `workspace.deleteSession`（与侧边栏删除同一条 teardown：停活体 agent → 解绑注册 → 删持久日志），删除后客户端立即刷新会话基线——被删会话从侧边栏彻底消失，**不会残留在「未分组」**；每步有超时兜底，界面不会卡死在「正在删除…」。手机窄屏下表格自动切换为卡片式行布局（复选框 | 标题 / 工作区·日期 / 操作按钮），不再挤压成竖排；会话行的「…」菜单在触屏上常驻显示（触屏没有悬停，归档/删除入口在手机上可直接操作）。
 - 高峰/非高峰时段提示（v1.3.1 起，v1.3.8 定版在输入卡工具行）：输入框卡片底部工具行（模型选择与发送按钮那一行）**正中**常驻读数，仅两个标签——琥珀点「高峰时段」/ 绿点「非高峰时段」，字号与行内控件一致（13px）。北京时间 9:00–12:00 与 14:00–18:00 为高峰；悬停显示完整计费规则（非高峰价为高峰价的一半）与当前北京时间，每 30 秒自动刷新。挂载在 `conversation.input.right`，注入 `.uV2eYG_row{position:relative}` 后绝对定位在行中央，无需测量代码；空白新会话同样显示。手机窄屏下提示改为行内左侧常驻（加入 trailing 行，与模型芯片并列不重叠），桌面端保持行中央。
@@ -55,11 +55,10 @@
 | `main/menu.mjs` / `main/tray.mjs` | macOS 菜单栏与托盘 |
 | `assets/splash.html` | 启动动画（自包含单文件，无外部资源） |
 | `assets/desktop.patch.yml` | 桌面壳补丁层（insert 形式挂载全局约束规则插件行） |
-| `patches/` | 上游包整文件补丁（conversation / apiproxy / workspace 客户端 / web-frontend bundle），由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules |
+| `patches/` | rc.2 上游包整文件补丁（conversation / apiproxy）；workspace 与 web-frontend 使用官方实现 |
 | `packages/dsh-desktop/` | 双面插件：宿主 `globalInstructions` 远程服务、历史 Prompt、鲸鱼序列帧同源路由、客户端设置分类与变阻器、`@会话` 提及、`/mobile` 手机端页面；`lib/whale-sprites/` 存放六套 6×4 无损 WebP 图集 |
 | `scripts/build-icon.mjs` | 用官方鲸鱼 logo 生成应用图标与托盘图标 |
-| `scripts/sync-monorepo-overrides.mjs` | 将仓库本地构建的会话删除功能同步进桌面依赖树 |
-| `scripts/apply-vision-bridge.mjs` | 将 GUI 图片保存为原生附件并委派给 `vision` MCP 的可重建补丁 |
+| `scripts/check-rc2-runtime.mjs` | 校验官方 rc.2、原生 Vision Files API 与 Persistent Bash 快速路径 |
 | `electron-builder.yml` | 打包配置（dmg + zip，arm64） |
 
 ## 开发
@@ -86,7 +85,7 @@ npm run dev          # 以开发模式启动（服务直接跑在 electron 的 n
 - 服务子进程预加载 `main/child-guard.mjs` 监视所属 Electron 进程；桌面壳崩溃或被强杀后，服务会自行退出，避免遗留多套 `dsh web` 与 MCP 进程。用量页打开时先从 `$DSH_HOME/desktop/usage-scan-cache.json` 立即渲染，再由后台子进程增量扫描原始会话日志并静默更新，不再让面板等待 zstd 解码。Electron 内置 Node 的 zstd 原生解码存在随机 SIGTRAP（同步/异步/流式路径均复现过），因此所有解压都隔离在 `assets/usage-scan.mjs` 子进程中（崩溃不影响服务进程），并按文件 mtime+size+frameEnd 缓存，只重扫发生变化的日志。
 - 开发调试时如需与已安装实例共存，用 `DSH_USER_DATA_DIR=/tmp/dsh-uitest` 隔离开发实例的配置目录（锁、缓存、日志互不干扰）。
 - 修改 `packages/dsh-desktop/lib/` 后：`npm run pack:plugin`（先强制校验插件 JavaScript 语法，再打进 tarball 并刷新 node_modules 里的插件副本），然后 `npm run dist` 重新打包；每次 `dist` 也会自动跑这一步。
-- `npm run dist` 在打包前会应用官方 persistent Bash 快速结算修复、清理依赖构建注释中的本机绝对路径；打包后再执行 Release 纯净度审计。发现 `.env`、凭据/用户数据文件、真实密钥格式、本机路径或非运行时顶层文件时，构建以失败结束，不得上传产物。
+- `npm run dist` 在打包前会校验官方 rc.2 自带的 Persistent Bash 与原生多模态能力、清理依赖构建注释中的本机绝对路径；打包后再执行 Release 纯净度审计。发现 `.env`、凭据/用户数据文件、真实密钥格式、本机路径或非运行时顶层文件时，构建以失败结束，不得上传产物。
 
 ## 旧版存档
 
@@ -95,12 +94,11 @@ npm run dev          # 以开发模式启动（服务直接跑在 electron 的 n
 ## 从新克隆构建
 
 ```bash
-npm install                                   # 恢复依赖（按锁文件）
-DSH_MONOREPO=/path/to/deepseek-harness npm run sync:monorepo   # 可选：恢复本地 fork 特性覆盖层
+npm install                                   # 恢复官方 rc.2 依赖（按锁文件）
 npm run dist                                  # 打包
 ```
 
-> 本项目是独立 Git 仓库（私有 GitHub：lijunyu726/deepseek-harness-desktop）。没有 DSH 大仓时也能构建运行，只是缺会话删除等 fork 特性；构建和运行不依赖维护者机器上的绝对项目路径。
+> 本项目是独立 Git 仓库（私有 GitHub：lijunyu726/deepseek-harness-desktop），直接消费官方 npm rc.2；构建和运行不依赖维护者机器上的 DSH 大仓或绝对项目路径。
 
 ## 打包
 
@@ -135,23 +133,21 @@ Electron 打包采用运行时白名单，只包含 `main/`、`assets/`、`packa
 
 ## Persistent Bash 命令提速修复
 
-本项目消费的 DSH `0.1.0-rc.6` 存在官方确认的提示符协议冲突：`dsh-tool-bash-persistent` 把 `PS1` 改成私有提示符，而 `dsh-terminal-bash` 仍等待自己的受控提示符，导致 macOS 上几乎每次命令都退化到 3.5 秒静默结算。DeepSeek 官方在 `a8dc6f9776d20d2e846e8373628ffd1a03808c84`（Fixes #2585，已进入 `0.1.0-rc.7`）中同时修复协议两侧：后端的 `PROMPT_COMMAND` 每次提示前重新设定受控 `PS1`，持久 Bash 工具不再覆盖/匹配私有 `PS1`，而是使用 `stdin_read` 结算信号。
+当前桌面端直接使用官方 DSH `0.1.1-rc.2`，不再向依赖树回植旧补丁。官方运行时本身已经在 `dsh-terminal-bash` 的 `PROMPT_COMMAND` 中重设受控 `PS1`，持久 Bash 工具初始化只关闭 echo，并以 `stdin_read` 信号快速结算。`npm run upstream:check` / `npm run bash:check` 会同时核对协议两侧；`npm run benchmark:bash` 则直接加载打包 `.app` 内的模块做真实 PTY 回归，避免把静态标记误当成实际性能。
 
-桌面端通过 `scripts/apply-persistent-bash-fix.mjs` 将这两个官方 `rc.7` 运行时变化逐字回植到当前 `rc.6`，避免整体升级 `rc.7` 同时触碰桌面端已有的图片桥、设置面、会话删除覆盖与六档模型选择。脚本只接受已知旧状态或官方已修复状态，可重复执行；`npm run bash:check` 校验补丁完整性，`npm run benchmark:bash` 则直接加载打包 `.app` 内的模块，用真实 PTY 将静默兜底推到 30 秒后连跑命令，确保结果来自受控 Prompt 快速路径。官方在 darwin 的基准为裸 send 从约 3540ms 降至约 86ms，工具调用从 7180/3560/3566ms 降至 355/88/91ms；本项目仍以本机打包应用的实际结果作为发布判据，不把官方数字冒充本机实测。
+## DeepSeek rc.2 原生多模态
 
-## DeepSeek 文本模型的图片桥接
+官方 rc.2 默认公布 `deepseek-v4-flash`、`deepseek-v4-pro` 和 `deepseek-v4-flash-vision-exp`。只有 Vision 型号声明 `inputModalities: [text, image]`；普通 Flash/Pro 保持文本输入。会话发送图片前按当前模型能力检查，不能靠改声明把文本模型伪装成视觉模型。
 
-DeepSeek V4 的 chat-completions 路由是纯文本模型。官方文档中的 `input: [text, image]` 只用于声明一个自定义提供方的模型本身确实接受图片，不能把 DeepSeek V4 改造成视觉模型；错误声明会把原始图片发给 DeepSeek，并由提供方拒绝。
+Vision 请求沿官方链路处理：附件内容寻址落盘，按模型预算自动缩放和选择 PNG/WebP/JPEG 编码，优先 `POST /files` 并缓存可复用 `file_id`；文件解析失败或超时时，用相同派生图片重建整次请求并回退内联 base64，不在同一请求混用两种表示。桌面补丁只额外保留普通文件/文件夹的 `file` 元数据块，不改写 image 块，也不再把 GUI 图片强制委派给 vision MCP。
 
-桌面端因此在打包依赖上应用一层可重建的 MCP 委派桥接：当 GUI 消息含图片且当前模型只接受文本时，宿主先按 Harness 原生图片限制验证并保存文件，在持久消息中保留图片以供界面展示，同时附加包含不可变本地附件路径的工具指令。模型请求边界会移除图片块，所以 DeepSeek 只收到文字，并被明确要求调用 `mcp__vision__describe_image`；`vision` MCP 使用多模态模型读取该路径，把文字结果送回 DeepSeek 的正常工具循环。切换到文本模型时，只有每张历史图片都带有这种桥接指令才会放行；未桥接的原生视觉历史仍会被安全拒绝。原生支持图片的模型仍接收原始图片。
+`scripts/check-rc2-runtime.mjs` 会核对官方版本、Vision 模型、Files API 和 Bash 快速路径，最终 `.app` 也在 Release 审计阶段复测。依赖版本或结构漂移会直接阻止打包，不能通过编辑 `.app` 内文件绕过。
 
-桥接脚本是 `scripts/apply-vision-bridge.mjs`。`npm run dev`、`npm run dist` 和 `npm run dist:dir` 会先应用 persistent Bash 修复，再执行视觉桥与桌面插件打包；脚本可重复运行，并拒绝修改无法识别的依赖版本。`npm run vision:check` 检查补丁完整性和生成文件语法。发送请求的取消信号会传到图片准入阶段，因此前端取消后不会继续把消息加入队列。视觉模型的网络超时仍由 `vision` MCP 自己控制，工具失败会作为工具错误返回到本轮，而不是形成一个脱离会话的后台请求。
-
-`vision` MCP 必须挂载为服务名 `vision`，并暴露 `describe_image`。设置 → 扩展 → 看图工具可直接修改它的模型名、调用地址与 API Key（写入服务脚本旁的 `vision.config.json`，每次调用实时读取；首次保存会把服务脚本替换为随应用打包的配置读取模板 `assets/vision-server.mjs` 并重启该 MCP 行）。它按文件头而不是扩展名识别 PNG/JPEG/WebP/GIF，因为 Harness 的内容寻址附件文件没有扩展名。MCP 仍可用于模型主动读取用户给出的普通本地图片路径；GUI 拖放或粘贴图片会自动生成同一种工具调用路径。
+设置中的 `vision` MCP 管理仍保留，供 Agent 主动读取任意本地图片路径或给其他文本模型显式调用；它不再是 Vision 模型拖放图片的必经链路，其 API Key 也不会进入仓库或安装包。
 
 图片桥接不绕过当前对话模型的计费和额度：MCP 看图成功后，DeepSeek 仍需一次可用的文本推理请求来发起工具调用并生成最终回答。DeepSeek 账户余额不足时，文字和图片消息都会在模型请求处失败。
 
-要恢复原生行为，重新安装 `desktop` 依赖即可还原 `node_modules`，随后不要运行 `vision:prepare`；原生行为会在 DeepSeek 会话发送图片前报告模型不支持图片。升级 `@deepseek-ai/dsh` 后必须先运行 `npm run vision:prepare`，如果脚本拒绝新版本，应先对照新的 `dsh-host-apiproxy` 源码更新补丁，不能直接编辑 `.app` 内文件。
+要恢复纯官方界面行为，按锁文件重装依赖且不运行 `upload:prepare` 即可；要继续使用本桌面端增强，则按 `upstream:check → upload:prepare → pack:plugin` 顺序重建。
 
 ## 升级 dsh 版本
 

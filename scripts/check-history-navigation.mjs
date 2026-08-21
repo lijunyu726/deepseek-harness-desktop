@@ -20,6 +20,22 @@ function read(file) {
   return readFileSync(file, 'utf8')
 }
 
+/** Match runtime sanitization without weakening equality for executable code. */
+function canonicalBuildPaths(source) {
+  const marker = '//#region \\0dsh-css:'
+  return source.split('\n').map((line) => {
+    const at = line.indexOf(marker)
+    if (at < 0) return line
+    const start = at + marker.length
+    const value = line.slice(start)
+    const packages = value.indexOf('/packages/')
+    if ((value.startsWith('/home/') || value.startsWith('/Users/') || value.startsWith('/virtual/')) && packages >= 0) {
+      return `${line.slice(0, start)}/virtual/deepseek-harness${value.slice(packages)}`
+    }
+    return line
+  }).join('\n')
+}
+
 function validate(label, conversation, pluginClient, pluginHost) {
   assert(
     pluginHost.includes("rememberPrompt(String(agent.id ?? ''), String(message?.id ?? ''), text)"),
@@ -75,7 +91,7 @@ if (args.includes('--installed')) {
   const installedConversation = read(path.join(scope, 'dsh-client-ui-conversation', 'lib', 'client.js'))
   const installedPluginClient = read(path.join(scope, 'dsh-desktop', 'lib', 'client.js'))
   const installedPluginHost = read(path.join(scope, 'dsh-desktop', 'lib', 'index.js'))
-  assert(installedConversation === sourceConversation, 'installed conversation bundle differs from source patch')
+  assert(canonicalBuildPaths(installedConversation) === canonicalBuildPaths(sourceConversation), 'installed conversation bundle differs from source patch')
   assert(installedPluginClient === sourcePluginClient, 'installed plugin client differs from package source')
   assert(installedPluginHost === sourcePluginHost, 'installed plugin host differs from package source')
   validate('installed runtime', installedConversation, installedPluginClient, installedPluginHost)
@@ -89,7 +105,7 @@ if (appFlag >= 0) {
   const appConversation = read(path.join(scope, 'dsh-client-ui-conversation', 'lib', 'client.js'))
   const appPluginClient = read(path.join(scope, 'dsh-desktop', 'lib', 'client.js'))
   const appPluginHost = read(path.join(scope, 'dsh-desktop', 'lib', 'index.js'))
-  assert(appConversation === sourceConversation, 'packaged conversation bundle differs from source patch')
+  assert(canonicalBuildPaths(appConversation) === canonicalBuildPaths(sourceConversation), 'packaged conversation bundle differs from source patch')
   assert(appPluginClient === sourcePluginClient, 'packaged plugin client differs from package source')
   assert(appPluginHost === sourcePluginHost, 'packaged plugin host differs from package source')
   validate('packaged app', appConversation, appPluginClient, appPluginHost)

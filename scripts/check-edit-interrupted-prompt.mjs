@@ -22,6 +22,22 @@ function read(file) {
   return readFileSync(file, 'utf8')
 }
 
+/** Match runtime sanitization without weakening equality for executable code. */
+function canonicalBuildPaths(source) {
+  const marker = '//#region \\0dsh-css:'
+  return source.split('\n').map((line) => {
+    const at = line.indexOf(marker)
+    if (at < 0) return line
+    const start = at + marker.length
+    const value = line.slice(start)
+    const packages = value.indexOf('/packages/')
+    if ((value.startsWith('/home/') || value.startsWith('/Users/') || value.startsWith('/virtual/')) && packages >= 0) {
+      return `${line.slice(0, start)}/virtual/deepseek-harness${value.slice(packages)}`
+    }
+    return line
+  }).join('\n')
+}
+
 function validate(label, conversation, plugin) {
   assert(
     conversation.includes('const messageText = contentParts(data.content).text;'),
@@ -64,7 +80,7 @@ if (args.includes('--installed')) {
   const installedPlugin = path.join(root, 'node_modules', '@deepseek-ai', 'dsh-desktop', 'lib', 'client.js')
   const installedConversationText = read(installedConversation)
   const installedPluginText = read(installedPlugin)
-  assert(installedConversationText === sourceConversationText, 'installed conversation bundle differs from patches/conversation-client.js')
+  assert(canonicalBuildPaths(installedConversationText) === canonicalBuildPaths(sourceConversationText), 'installed conversation bundle differs from patches/conversation-client.js')
   assert(installedPluginText === sourcePluginText, 'installed desktop plugin differs from packages/dsh-desktop/lib/client.js')
   validate('installed runtime', installedConversationText, installedPluginText)
 }
@@ -76,7 +92,7 @@ if (appFlag >= 0) {
   const appRoot = path.join(path.resolve(appDir), 'Contents', 'Resources', 'app', 'node_modules', '@deepseek-ai')
   const appConversationText = read(path.join(appRoot, 'dsh-client-ui-conversation', 'lib', 'client.js'))
   const appPluginText = read(path.join(appRoot, 'dsh-desktop', 'lib', 'client.js'))
-  assert(appConversationText === sourceConversationText, 'packaged conversation bundle differs from source patch')
+  assert(canonicalBuildPaths(appConversationText) === canonicalBuildPaths(sourceConversationText), 'packaged conversation bundle differs from source patch')
   assert(appPluginText === sourcePluginText, 'packaged desktop plugin differs from source package')
   validate('packaged app', appConversationText, appPluginText)
 }

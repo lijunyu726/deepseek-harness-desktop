@@ -1956,12 +1956,12 @@ window.__ModuleLoader__.load({
     // base64url(JSON-stringified session id) — must match the host decoder in
     // @deepseek-ai/dsh-session-reference exactly (UTF-8 → base64url).
         // — 模型思考强度滑动变阻器 ------------------------------------------------
-    // One slider spanning both DeepSeek models: each model's reasoning
-    // efforts run left→right (off → max), then the next model picks up, so
-    // the rheostat reads Flash·Off … Flash·Max | V4 Pro·Off … V4 Pro·Max.
-    // Every stop owns a lossless 24-frame sprite animation. Flash stays
-    // light/fast while Pro reads as heavier and more forceful, so Flash·Max
-    // never visually works harder than any Pro stop.
+    // Model identity and reasoning effort are deliberately separate controls.
+    // The compact rheostat always spans only the CURRENT model's ordered
+    // efforts, while the Advanced pane changes provider/model. Adding a new
+    // DeepSeek model therefore never turns the track into a 9/12-stop strip.
+    // Every visual tier uses the existing lossless 24-frame sprites; the
+    // Vision Flash model intentionally shares Flash's animation family.
 
     const RHEOSTAT_CSS = [
       '.dsh-rheostat { display: inline-flex; align-items: center; position: relative; }',
@@ -2070,14 +2070,26 @@ window.__ModuleLoader__.load({
     }
 
     const WHALE_SPRITE_BASE = '/dsh-desktop/whale-sprites'
-    const WHALE_STATES = [
-      { model: 'deepseek-v4-flash', effort: 'off', modelLabel: 'Flash', sprite: 'flash-off', duration: 3.0 },
-      { model: 'deepseek-v4-flash', effort: 'high', modelLabel: 'Flash', sprite: 'flash-high', duration: 2.0 },
-      { model: 'deepseek-v4-flash', effort: 'max', modelLabel: 'Flash', sprite: 'flash-max', duration: 1.7 },
-      { model: 'deepseek-v4-pro', effort: 'off', modelLabel: 'V4 Pro', sprite: 'pro-off', duration: 2.4 },
-      { model: 'deepseek-v4-pro', effort: 'high', modelLabel: 'V4 Pro', sprite: 'pro-high', duration: 1.6 },
-      { model: 'deepseek-v4-pro', effort: 'max', modelLabel: 'V4 Pro', sprite: 'pro-max', duration: 1.333 },
-    ]
+    const DEEPSEEK_MODEL_VISUALS = {
+      'deepseek-v4-flash-vision-exp': { label: 'Vision', family: 'flash' },
+      'deepseek-v4-flash': { label: 'Flash', family: 'flash' },
+      'deepseek-v4-pro': { label: 'V4 Pro', family: 'pro' },
+    }
+    const DEEPSEEK_EFFORT_VISUALS = {
+      flash: {
+        off: { sprite: 'flash-off', duration: 3.0 },
+        low: { sprite: 'flash-high', duration: 2.45 },
+        high: { sprite: 'flash-high', duration: 2.0 },
+        max: { sprite: 'flash-max', duration: 1.7 },
+      },
+      pro: {
+        off: { sprite: 'pro-off', duration: 2.4 },
+        low: { sprite: 'pro-high', duration: 1.95 },
+        high: { sprite: 'pro-high', duration: 1.6 },
+        max: { sprite: 'pro-max', duration: 1.333 },
+      },
+    }
+    const WHALE_SPRITES = ['flash-off', 'flash-high', 'flash-max', 'pro-off', 'pro-high', 'pro-max']
 
     function whaleSpriteUrl(sprite) {
       return `${WHALE_SPRITE_BASE}/${sprite}.webp`
@@ -2134,30 +2146,35 @@ window.__ModuleLoader__.load({
       }, [])
 
       react.useEffect(() => {
-        for (const state of WHALE_STATES) {
+        for (const sprite of WHALE_SPRITES) {
           const image = new Image()
-          image.src = whaleSpriteUrl(state.sprite)
+          image.src = whaleSpriteUrl(sprite)
         }
       }, [])
 
       const stops = react.useMemo(() => {
-        // DeepSeek keeps the chained Flash→Pro six-stop design.
+        // DeepSeek uses one compact effort-only track for the selected model.
+        // Vision Flash reuses the Flash sprite family until dedicated artwork
+        // exists; the visible model label still remains distinct.
         if (current?.provider === 'deepseek-official') {
           const group = (groups ?? []).find((g) => g.id === 'deepseek-official')
           if (group === undefined) return []
-          return WHALE_STATES.flatMap((state) => {
-            const model = (group.models ?? []).find((entry) => entry.id === state.model)
-            const effort = (model?.reasoning?.efforts ?? []).find((entry) => entry.id === state.effort)
-            if (model === undefined || effort === undefined) return []
+          const model = (group.models ?? []).find((entry) => entry.id === current.model)
+          if (model === undefined) return []
+          const modelVisual = DEEPSEEK_MODEL_VISUALS[model.id] ?? { label: model.name ?? model.id, family: 'flash' }
+          const effortVisuals = DEEPSEEK_EFFORT_VISUALS[modelVisual.family] ?? DEEPSEEK_EFFORT_VISUALS.flash
+          return (model.reasoning?.efforts ?? []).flatMap((effort) => {
+            const visual = effortVisuals[effort.id]
+            if (visual === undefined) return []
             return [{
               provider: group.id,
-              model: state.model,
-              effort: state.effort,
-              modelName: model.name ?? state.model,
-              effortName: effort.name ?? state.effort,
-              modelLabel: state.modelLabel,
-              sprite: state.sprite,
-              duration: state.duration,
+              model: model.id,
+              effort: effort.id,
+              modelName: model.name ?? model.id,
+              effortName: effort.name ?? effort.id,
+              modelLabel: modelVisual.label,
+              sprite: visual.sprite,
+              duration: visual.duration,
             }]
           })
         }
