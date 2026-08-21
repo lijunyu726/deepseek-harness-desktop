@@ -43,7 +43,7 @@ node_modules/          安装产物——绝不提交
 
 ## 发布纪律（每次功能改动完成后必须执行，用户明确要求）
 
-- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号必须高于 Git 历史和 Releases 中出现过的全部正式版本，严禁回退；当前恢复后的基线是 `1.4.1`，默认下一版按补丁位递增为 `1.4.2`。
+- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号必须高于 Git 历史和 Releases 中出现过的全部正式版本，严禁回退；当前基线是 `1.4.2`，默认下一版按补丁位递增为 `1.4.3`。
 - 打包与审计通过后，**必须**把全部源码改动（`patches/`、`packages/`、`scripts/`、`main/`、`assets/`、文档、版本号）提交并推送 GitHub（`origin/main`）。`release/` 与 `node_modules/` 永不提交；若用户需要安装包进 GitHub，走 GitHub Release 挂附件。
 
 ## 关键实现约束（改代码前必读）
@@ -55,7 +55,7 @@ node_modules/          安装产物——绝不提交
 - **Persistent Bash 修复必须覆盖协议两侧**：当前 rc.6 通过 `scripts/apply-persistent-bash-fix.mjs` 精确回植官方 `a8dc6f9`；不得按网帖只把 `CONTROLLED_PROMPT` 改成工具私有提示符。终端后端必须在 `PROMPT_COMMAND` 中重新设定受控 `PS1`，持久工具必须只执行 `stty -echo` 并以 `waitReason === "stdin_read"` 处理无结束标记回退。
 - **会话删除强制移除必须成为可重建补丁**：ApiProxy teardown 的 `ctx.agents.remove?.(sessionId)` / `ctx.sessions.remove?.(sessionId)` 只有在 rc.6 两个注册表真实提供 `remove(id)` 时才有效；不得再只把这两个方法手工复制进 `/Applications`。`apply-session-registry-remove-fix.mjs` 必须同时覆盖 `dsh-agent` 与 `dsh-session` 的 `lib/index.js`、`lib/types/index.js`、`lib/types/index.d.ts`，并由 `check-session-registry-remove-fix.mjs` 对正常移除、announcing/appending 延迟分支和 ApiProxy 接线做行为检查。
 - **日志扫描是增量且不阻塞面板的**：会话日志是只追加的 zstd 帧流；扫描结果（mtime/size/frameEnd/按日用量）持久化在 `$DSH_HOME/desktop/usage-scan-cache.json`。用量 RPC 必须先返回缓存，再后台启动单飞增量扫描；不得重新让客户端等待 zstd 子进程。
-- **历史 Prompt 只在接受边界记录，且必须按会话归属**：仅从根 agent 的 `agent/pre-step` claimed batch 记录 `source.kind === 'user'` 的文字，不监听 DOM 猜测发送、不记录草稿/系统注入/工具消息。每条记录必须携带 `sessionId`（`String(agent.id)`）；历史只能写入 `$DSH_HOME/desktop/prompt-history.json`，上限 100 条、单条 64 KiB、权限 600；`promptHistory` remote 必须按 sessionId 过滤，时间轴只显示当前会话。恢复草稿必须走 `inputActions.setDraft()`。
+- **历史 Prompt 只在接受边界记录，且点击只做消息定位**：仅从根 agent 的 `agent/pre-step` claimed batch 记录 `source.kind === 'user'` 的文字，不监听 DOM 猜测发送、不记录草稿/系统注入/工具消息。每条新记录必须携带 `sessionId`（`String(agent.id)`）和原始 `message.id`；历史只能写入 `$DSH_HOME/desktop/prompt-history.json`，上限 100 条、单条 64 KiB、权限 600；`promptHistory` remote 必须按 sessionId 过滤，时间轴只显示当前会话。点击时间轴严禁调用 `inputActions.setDraft()`，必须派发 `dsh-desktop:navigate-prompt`，由 ChatView 按 messageId 精确定位；旧记录回退同文本 + 最接近时间。目标未投影时自动逐页 `loadOlder()`，聊天滚到顶部 48px 内也自动加载；不得重新渲染「加载更早」按钮。
 - **被中断 Prompt 的编辑必须走正式输入状态机**：ESC 停止生成后，只允许最后一条有文字的用户消息显示编辑入口；消息正文从该行 durable content 的 `contentParts()` 提取，不得引用 `actions(text)` 回调之外的 `text`。原位编辑器必须支持 Enter 重发、Shift+Enter 换行、Esc 取消；重发走当前会话 `inputActions.setDraft()` → `inputActions.submit()`，提交交接成功后才清编辑态。改动后运行 `npm run edit:check -- --installed`。
 - **路径自愈**：插件内所有定位 app 资源（usage-scan.mjs、vision-server.mjs 模板）都用「模块目录相对路径 + `process.execPath` 回退」双候选；`ensureVisionCommand` 会在启动时把 vision MCP 行的 `command` 从系统 `node` 改写为应用自带 Node（app 移动后自动重写）。**不要把绝对路径写死在插件里。**
 - **插槽优先级**：接管 shell 的单席位要用比 0 更低的 priority（鲸鱼变阻器用 -10）。
@@ -67,7 +67,7 @@ node_modules/          安装产物——绝不提交
 
 ## 验证方式
 
-- 语法：`node --check packages/dsh-desktop/lib/*.js assets/*.mjs scripts/*.mjs`；
+- 语法：`node --check packages/dsh-desktop/lib/*.js assets/*.mjs scripts/*.mjs`；历史定位与自动分页另跑 `npm run history:check -- --installed`；
 - 依赖补丁：`npm run registry:check && npm run bash:check && npm run vision:check`；Bash 性能回归用 `npm run benchmark:bash`，它必须直接加载 `release/mac-arm64/DeepSeek Harness.app` 内的模块并通过真实 PTY 快速路径；
 - 隔离服务冒烟：复制 release 应用为 `TestApp.app`，用独立 `DSH_HOME` + `ELECTRON_RUN_AS_NODE=1` 启动（注意：插件必须由应用内 node_modules 解析，加载器不认 profile 里的软链指向的其它副本；补丁参数 `--expose-internals` 必须在 bin.js 之前）；
 - 浏览器交互：ego-browser（`useOrCreateTaskSpace` + 手机/桌面视口），测完 `completeTaskSpace`；

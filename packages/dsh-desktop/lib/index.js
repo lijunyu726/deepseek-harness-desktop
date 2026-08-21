@@ -74,6 +74,9 @@ function readPromptHistory() {
         createdAt: Number(item.createdAt) || 0,
         // v1.3.2 起按会话归属记录；历史无归属的旧条目统一落到空串。
         sessionId: typeof item.sessionId === 'string' ? item.sessionId : '',
+        // v1.4.2 起保存原始 user/message 的稳定身份，供时间轴精确定位。
+        // 旧历史没有该字段，客户端会回退到文本与时间匹配。
+        messageId: typeof item.messageId === 'string' ? item.messageId : '',
       }))
       .filter((item) => item.text.trim().length > 0)
       .slice(0, PROMPT_HISTORY_LIMIT)
@@ -83,12 +86,17 @@ function readPromptHistory() {
 }
 
 /** Atomically persist one accepted user prompt, deduplicated newest-first per session. */
-function rememberPrompt(sessionId, text) {
+function rememberPrompt(sessionId, messageId, text) {
   if (typeof text !== 'string' || typeof sessionId !== 'string' || sessionId.length === 0) return
   const normalized = text.trim()
   if (normalized.length === 0 || Buffer.byteLength(normalized, 'utf8') > MAX_PROMPT_BYTES) return
   const items = [
-    { text: normalized, createdAt: Date.now(), sessionId },
+    {
+      text: normalized,
+      createdAt: Date.now(),
+      sessionId,
+      messageId: typeof messageId === 'string' ? messageId : '',
+    },
     ...readPromptHistory().filter((item) => !(item.sessionId === sessionId && item.text === normalized)),
   ].slice(0, PROMPT_HISTORY_LIMIT)
   const file = promptHistoryPath()
@@ -2009,7 +2017,7 @@ function installPromptHistory(ctx) {
     if (decision.kind === 'reject' || !ctx.agents.roots().includes(agent)) return decision
     for (const message of messages ?? []) {
       const text = promptText(message)
-      if (text.length > 0) rememberPrompt(String(agent.id ?? ''), text)
+      if (text.length > 0) rememberPrompt(String(agent.id ?? ''), String(message?.id ?? ''), text)
     }
     return decision
   })

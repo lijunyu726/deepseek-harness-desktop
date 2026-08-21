@@ -26,7 +26,7 @@ Electron 内置 Node 的 zstd 原生解码（同步/异步/流式路径均实测
 
 ### 历史 Prompt
 
-宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`（该槽位提供 `useInput`/`inputActions` 标准 props），渲染为钉在对话页左缘、抽屉右侧的 Codex 同构裸时间轴：历史在渲染前反转为最旧在上、最新在下；每项拥有 30×8px 稳定命中区，`::before` 绘制左端对齐的 6×1px 横线。轨道 `mousemove` 持续上报鼠标 Y，每根横线按自身中心与光标的像素距离计算高斯值（σ=18），仅通过 CSS 自定义属性把 `scaleX` 从 1 放大至约 4.35，线宽峰值约 26px且厚度始终为 1px；几何在挂载、条目变化、滚动和窗口缩放时重测。悬停气泡与最近横线垂直居中，只渲染最多四行 Prompt 正文，无标题、日期、序号、箭头和描边；点击仍通过标准 `inputActions.setDraft()` 恢复文本，没有旁路输入状态机。轨道 z-index 12 / 气泡 13，低于设置等浮层。桌面与手机连接同一服务，因此天然共享历史；手机布局下 pane 左缘为视口边缘、`cardRect.left - 30` 为负值，钳位到 ≥4px 的可见槽内，避免时间轴跑到屏幕外。
+宿主在根 agent 的 `agent/pre-step` waterfall 接受边界，从原始 claimed batch 中仅选取 `source.kind === 'user'` 的 text blocks；被拒绝的输入、系统/插件上下文、工具消息与未发送草稿不入库。记录按文本去重、最新优先、上限 100 条，原子写入 `$DSH_HOME/desktop/prompt-history.json`（权限 600）；v1.4.2 起同时保存原始 `message.id`，旧记录缺失时保持可读。客户端通过 `globalInstructions/promptHistory` 读取，注册在 `conversation.session.header.utilities`，渲染为钉在对话页左缘、抽屉右侧的裸时间轴：历史在渲染前反转为最旧在上、最新在下；每项拥有 30×8px 稳定命中区，`::before` 绘制左端对齐的 6×1px 横线。轨道 `mousemove` 持续上报鼠标 Y，每根横线按自身中心与光标的像素距离计算高斯值（σ=18），仅通过 CSS 自定义属性把 `scaleX` 从 1 放大至约 4.35，线宽峰值约 26px且厚度始终为 1px；几何在挂载、条目变化、滚动和窗口缩放时重测。悬停气泡与最近横线垂直居中，只渲染最多四行 Prompt 正文。点击不再写入 composer，而是派发 `dsh-desktop:navigate-prompt`；ChatView 先按稳定 messageId 查找当前 user/steering 节点，旧记录再用同文本和最接近 `createdAt` 的事件时间回退。目标不在当前投影窗口时，单飞逐页 `loadOlder()`，命中后把对应行居中；普通阅读上滑到顶部 48px 内同样自动翻页，首屏不足一页时自动补齐，因此不再渲染手动「加载更早」按钮。轨道 z-index 12 / 气泡 13，低于设置等浮层。桌面与手机连接同一服务，因此天然共享历史；手机布局下 pane 左缘为视口边缘、`cardRect.left - 30` 为负值，钳位到 ≥4px 的可见槽内，避免时间轴跑到屏幕外。
 
 ### 局域网可信名单自愈
 
@@ -52,7 +52,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 四个上游包（conversation / apiproxy / workspace 客户端 / web-frontend）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。
 
-- **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消）。
+- **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消）、历史 Prompt 稳定消息定位与顶部自动分页。
 - **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
 - **workspace 客户端补丁**：删除工作区后立即 `ctx.sessions.refresh()` 收敛冷会话；删除确认弹窗文案改为「永久删除其中全部会话与聊天记录，不可恢复」。
 - **web-frontend 补丁**：AttachmentRail 非图片附件渲染文件图标（安装脚本按 `dist/index.html` 动态解析哈希文件名）。
@@ -66,7 +66,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 - **归档管理删除（v1.3.9 重做）**：插件宿主 `deleteSessions` remote（批量、每步超时兜底）改为**逐会话委托 ApiProxy 的 `workspace.deleteSession`**——与侧边栏删除同一条 teardown（停活体 agent → 解绑注册 → 删持久日志），因为 agent 工厂的解绑闭包是模块私有的，插件侧只做 `cancel + scope.dispose` 会留下 live 注册，被删会话以幽灵形式重回「未分组」（v1.3.1 版本的缺陷）。幽灵场景（日志已删但仍在 live 注册）下 teardown 先处置后报 session-not-found，宿主以「无 live 残留即视为删除成功」兜底。客户端单选删除二次确认内联在行原位（确认删除/取消与删除按钮同排），多选批量删除用顶部批量确认条；删除落库后 `gateway.refreshSessions()` 重拉会话基线，冷会话立即从侧边栏消失。无 ApiProxy 的宿主回退到 best-effort 序列。
 - **注册表强制移除（v1.4.1 固化）**：rc.6 ApiProxy teardown 已调用 `ctx.agents.remove?.(sessionId)` / `ctx.sessions.remove?.(sessionId)`，但 npm 发布的 `AgentRegistry` / `SessionStore` 没有对应公开方法，曾经只在已安装 `.app` 中手工存在，正规重打包会静默退化为空操作。`scripts/apply-session-registry-remove-fix.mjs` 现在以精确锚点给两个包的主 bundle、types bundle 和 `.d.ts` 六个文件补上 `remove(id)`；正常状态立即复用私有 `detachEntered()`，announcing/appending 中只置 `detachRequested` 等生命周期发布结束后移除。`check-session-registry-remove-fix.mjs` 直接导入实际运行模块，验证缺失、立即移除和延迟分支，并检查 ApiProxy 两侧接线；最终 App/DMG 也必须用 `--app` 复测。
 - **高峰/非高峰时段提示**：纯客户端组件 `PriceHoursHint`，浏览器时钟按 UTC+8 换算北京时间（无夏令时），9:00–12:00 / 14:00–18:00 判为高峰，其余为非高峰（价格为高峰一半）；30 秒刷新，仅两个标签，字号与工具行控件一致（13px/500/20px）。v1.3.8 定版：挂载在 `conversation.input.right`（位于输入卡底部工具行 `uV2eYG_row` 内），注入样式 `.uV2eYG_row{position:relative}` 后组件以 `position:absolute + translate(-50%,-50%)` 落在行中央——无测量代码，水平/垂直都随行自适应。迭代史上依次弃用的挂载：composer.dock → header.utilities → input.dock（fixed 定位 + 面板矩形测量）；v1.3.4 修复了 `Date.now()` 时间戳被误当 Date 实例的渲染崩溃（这是此前任何位置都看不到提示的根因）。
-- **历史 Prompt 按会话隔离（v1.3.2）**：宿主记录每条 prompt 时携带 `String(agent.id)` 会话归属；`promptHistory(limit, sessionId)` remote 按会话过滤；客户端 `PromptHistoryRail` 从槽位 standard kit 解构 `sessionId` 并随会话切换重载。外观不变，仅数据范围收敛到当前会话。
+- **历史 Prompt 按会话隔离（v1.3.2）与消息定位（v1.4.2）**：宿主记录每条 prompt 时携带 `String(agent.id)` 会话归属，v1.4.2 再携带 `message.id`；`promptHistory(limit, sessionId)` remote 按会话过滤。客户端 `PromptHistoryRail` 随会话切换重载；点击只导航到原消息，不再预填输入框，ChatView 负责按需加载旧页并定位。
 
 ## 数据与凭据流
 
@@ -86,5 +86,5 @@ Electron `files` 白名单只允许 `main/`、`assets/`、根 `package.json` 和
 ## 构建与回退
 
 - 构建链：`registry:prepare` → `bash:prepare` → `vision:prepare` → `upload:prepare` → `pack:plugin`（tgz → node_modules）→ `sanitize:runtime` → `ensure-peer-deps`（peer 依赖钉入 package.json）→ electron-builder 运行时白名单（arm64 DMG+zip，未签名）→ `audit:release`。
-- 校验：`npm run registry:check`、`npm run bash:check`、`npm run vision:check`、`npm run upload:check`、`npm run edit:check -- --installed`、`node --check`、`npm run benchmark:bash`（加载打包应用内模块的真实 PTY 时延）、`node scripts/verify-cold-start.mjs`（项目外副本、隔离 `DSH_HOME`/userData、服务与渲染器）、最终 `.app` 与 DMG 纯净度复扫。
+- 校验：`npm run registry:check`、`npm run bash:check`、`npm run vision:check`、`npm run upload:check`、`npm run edit:check -- --installed`、`npm run history:check -- --installed`、`node --check`、`npm run benchmark:bash`（加载打包应用内模块的真实 PTY 时延）、`node scripts/verify-cold-start.mjs`（项目外副本、隔离 `DSH_HOME`/userData、服务与渲染器）、最终 `.app` 与 DMG 纯净度复扫。
 - 回退：插件代码回退后重跑 `pack:plugin` + `dist`；补丁异常时重装依赖重跑；运行时行为回退只需清桌面配置目录，数据不受影响。

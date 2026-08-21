@@ -1703,9 +1703,8 @@ window.__ModuleLoader__.load({
 
     // — 历史 Prompt -----------------------------------------------------------
     // Accepted user prompts are recorded by the host at agent/pre-step. This
-    // button reads that shared history and restores entries through the
-    // conversation input machine's public setDraft action, so desktop and
-    // mobile use the same data and preserve input-machine invariants.
+    // rail reads that shared history and asks the conversation view to reveal
+    // the matching durable user message. It never writes into the composer.
 
     const PROMPT_HISTORY_CSS = [
       // Codex-style bare timeline: a fixed-width hit lane containing fine,
@@ -1743,18 +1742,15 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function PromptHistoryRail({ useInput, inputActions, gateway, sessionId }) {
-      const input = typeof useInput === 'function' ? useInput((state) => state) : null
+    function PromptHistoryRail({ inputActions, gateway, sessionId }) {
       const [items, setItems] = react.useState([])
       const [mouseY, setMouseY] = react.useState(null)
       const [paneLeft, setPaneLeft] = react.useState(null)
       const itemsRef = react.useRef(items)
-      const inputRef = react.useRef(input)
       const leaveTimerRef = react.useRef(null)
       const railRef = react.useRef(null)
       const measureRef = react.useRef({ firstTop: 0, step: 8 })
       itemsRef.current = items
-      inputRef.current = input
 
       // Expose inputActions globally so the ESC cancel handler can use setDraft.
       react.useEffect(() => {
@@ -1842,14 +1838,19 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      const applyEntry = react.useCallback((index) => {
-        if (inputRef.current?.phase !== 'plain') return
+      const revealEntry = react.useCallback((index) => {
         const entry = itemsRef.current[index]
         if (entry === undefined) return
-        inputActions.setDraft(entry.text)
-        focusComposerAtEnd()
+        window.dispatchEvent(new CustomEvent('dsh-desktop:navigate-prompt', {
+          detail: {
+            sessionId,
+            messageId: typeof entry.messageId === 'string' ? entry.messageId : '',
+            createdAt: Number(entry.createdAt) || 0,
+            text: entry.text,
+          },
+        }))
         setMouseY(null)
-      }, [inputActions])
+      }, [sessionId])
 
       const scheduleLeave = react.useCallback(() => {
         if (leaveTimerRef.current !== null) clearTimeout(leaveTimerRef.current)
@@ -1917,7 +1918,7 @@ window.__ModuleLoader__.load({
             style: railStyle,
             role: 'listbox',
             'aria-label': '历史 Prompt 时间轴',
-            title: '历史 Prompt：悬停预览 · 点击填入输入框',
+            title: '历史 Prompt：悬停预览 · 点击定位到原消息',
             onMouseEnter: cancelLeave,
             onMouseMove: (event) => {
               cancelLeave()
@@ -1934,7 +1935,7 @@ window.__ModuleLoader__.load({
             'aria-selected': index === hovered,
             'aria-label': `历史 Prompt ${index + 1}`,
             style: tickStyle(index),
-            onClick: () => applyEntry(index),
+            onClick: () => revealEntry(index),
           })),
         ),
         hovered !== null && entry !== undefined && popStyle !== null && react.createElement(
@@ -3258,10 +3259,10 @@ window.__ModuleLoader__.load({
           SessionIdTracker,
         ),
       )
-      // 历史 Prompt 时间轴：一条 prompt 一根小杠，悬停预览、点击填入。
+      // 历史 Prompt 时间轴：一条 prompt 一根小杠，悬停预览、点击定位原消息。
       // Rendered as a fixed rail pinned to the conversation pane's left gutter
       // (Codex-style); the header slot is only the in-session anchor that
-      // provides useInput/inputActions.
+      // provides the current session id and the edit-resend inputActions bridge.
       ctx.slots.inject('conversation.session.header.utilities', () =>
         ctx.slots.register(
           {

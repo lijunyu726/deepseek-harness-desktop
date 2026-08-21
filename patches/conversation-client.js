@@ -5711,6 +5711,35 @@ window.__ModuleLoader__.load({
 				scrollTop: scrollport.scrollTop
 			};
 		}
+		/** Resolve one history-rail target to a currently projected user row. New
+		 *  records use the durable message id; legacy records fall back to exact
+		 *  visible text and choose the event time nearest the recorded timestamp. */
+		function promptTargetKey(order, nodes, target) {
+			const messageId = typeof target.messageId === "string" ? target.messageId : "";
+			const text = typeof target.text === "string" ? target.text.trim() : "";
+			const createdAt = Number(target.createdAt) || 0;
+			const fallback = [];
+			for (const key of order) {
+				const node = nodes.get(key);
+				if (node === void 0 || node.kind !== "user" && node.kind !== "steering") continue;
+				const data = node.data;
+				if (messageId !== "" && data.messageId === messageId) return key;
+				if (messageId === "" && text !== "" && contentParts(data.content).text.trim() === text) {
+					fallback.push({ key, distance: createdAt > 0 ? Math.abs((Number(data.time) || 0) - createdAt) : 0 });
+				}
+			}
+			fallback.sort((left, right) => left.distance - right.distance);
+			return fallback[0]?.key ?? null;
+		}
+		/** Center one projected prompt row in its actual scrollport. */
+		function revealPromptRow(list, key) {
+			const row = anchorElement(list, key);
+			if (row === null) return false;
+			const scrollport = scrollerOf(list);
+			const targetTop = Math.max(16, (scrollport.clientHeight - row.getBoundingClientRect().height) / 2);
+			scrollport.scrollTop += flowTop(row, scrollport) - targetTop;
+			return true;
+		}
 		function runningTurnStartTime(timeline) {
 			let latest = null;
 			for (const turn of timeline.turns.values()) if (turn.status === "open" && turn.start !== void 0) latest = turn.start.time;
@@ -5770,6 +5799,11 @@ window.__ModuleLoader__.load({
 			/** Paging anchor: semantic row/position at click, updated by reader scrolls
 			* while the request is pending and restored after the prepend lands. */
 			const anchorRef = (0, react.useRef)(null);
+			/** Single-flight guard for both scroll-triggered and navigation-triggered paging. */
+			const olderRequestRef = (0, react.useRef)(false);
+			/** Pending history-rail target while older pages are being projected. */
+			const promptNavigationRef = (0, react.useRef)(null);
+			const tryPromptNavigationRef = (0, react.useRef)(() => {});
 			const firstSeqRef = (0, react.useRef)(null);
 			const openedRef = (0, react.useRef)(false);
 			const lastKeyRef = (0, react.useRef)(null);
@@ -5847,6 +5881,7 @@ window.__ModuleLoader__.load({
 				/* v8 ignore next -- ref-null guard: the handler only fires while mounted. */
 				if (local === null) return;
 				const el = scrollerOf(local);
+				if (hasMore && !loadingOlder && el.scrollTop <= 48) loadOlderAnchored();
 				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
 				const movedByReader = Math.abs(el.scrollTop - Math.min(observedTopRef.current, floor)) > .5;
 				const isAtBottom = movedByReader ? floor - el.scrollTop <= 25 : atBottomRef.current;
@@ -5907,8 +5942,8 @@ window.__ModuleLoader__.load({
 				if (!loadingOlder) anchorRef.current = null;
 			}, [loadingOlder]);
 			const loadOlderAnchored = () => {
+				if (!hasMore || loadingOlder || olderRequestRef.current) return false;
 				const local = listRef.current;
-				/* v8 ignore next -- ref-null guard: the paging button renders inside the list tree. */
 				if (local !== null) {
 					const el = scrollerOf(local);
 					const row = pagingAnchor(local, el);
@@ -5917,8 +5952,67 @@ window.__ModuleLoader__.load({
 						top: flowTop(row, el)
 					};
 				}
-				loadOlder();
+				olderRequestRef.current = true;
+				try {
+					Promise.resolve(loadOlder()).catch(() => {}).finally(() => {
+						olderRequestRef.current = false;
+					});
+				} catch {
+					olderRequestRef.current = false;
+				}
+				return true;
 			};
+			const tryPromptNavigation = () => {
+				const target = promptNavigationRef.current;
+				if (target === null) return;
+				const key = promptTargetKey(order, nodeStore, target);
+				if (key !== null) {
+					promptNavigationRef.current = null;
+					const local = listRef.current;
+					if (local === null || !revealPromptRow(local, key)) return;
+					const el = scrollerOf(local);
+					anchorRef.current = null;
+					observedTopRef.current = el.scrollTop;
+					const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 25;
+					atBottomRef.current = isAtBottom;
+					setAtBottom(isAtBottom);
+					const position = isAtBottom ? null : scrollPosition(local, el);
+					chatScroll.save(position);
+					return;
+				}
+				if (!hasMore) {
+					promptNavigationRef.current = null;
+					return;
+				}
+				loadOlderAnchored();
+			};
+			tryPromptNavigationRef.current = tryPromptNavigation;
+			(0, react.useEffect)(() => {
+				const onNavigatePrompt = (event) => {
+					const target = event instanceof CustomEvent ? event.detail : null;
+					if (target === null || typeof target !== "object" || String(target.sessionId ?? "") !== sessionId) return;
+					if (typeof target.text !== "string" || target.text.trim() === "") return;
+					promptNavigationRef.current = target;
+					tryPromptNavigationRef.current();
+				};
+				window.addEventListener("dsh-desktop:navigate-prompt", onNavigatePrompt);
+				return () => {
+					window.removeEventListener("dsh-desktop:navigate-prompt", onNavigatePrompt);
+					promptNavigationRef.current = null;
+				};
+			}, [sessionId]);
+			(0, react.useLayoutEffect)(() => {
+				if (!loadingOlder) tryPromptNavigationRef.current();
+			}, [order.length, nodeStore, hasMore, loadingOlder]);
+			// If the newest page is too short to create a scrollbar, keep filling the
+			// viewport automatically; otherwise older history would be unreachable
+			// after removing the manual paging button.
+			(0, react.useEffect)(() => {
+				const local = listRef.current;
+				if (local === null || !hasMore || loadingOlder) return;
+				const el = scrollerOf(local);
+				if (el.scrollHeight <= el.clientHeight + 1) loadOlderAnchored();
+			}, [order.length, hasMore, loadingOlder]);
 			return (0, react_jsx_runtime.jsx)("div", {
 				className: ChatView_module_css_default.root,
 				children: (0, react_jsx_runtime.jsxs)("div", {
@@ -5938,15 +6032,6 @@ window.__ModuleLoader__.load({
 								children: t("chat.loadError", {
 									message: openError.message,
 									code: openError.code
-								})
-							}),
-							hasMore && (0, react_jsx_runtime.jsx)("div", {
-								className: ChatView_module_css_default.older,
-								children: (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									disabled: loadingOlder,
-									onClick: loadOlderAnchored,
-									children: loadingOlder ? t("loading") : t("chat.loadOlder")
 								})
 							}),
 							order.map((nodeKey) => (0, react_jsx_runtime.jsx)(ChatNodeSeat, {
@@ -8593,6 +8678,7 @@ window.__ModuleLoader__.load({
 					source: event.data.source
 				} : {
 					kind: "user",
+					messageId: event.data.id,
 					seq: event.seq,
 					time: event.time,
 					content: event.data.content,
@@ -10150,9 +10236,7 @@ window.__ModuleLoader__.load({
 							const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd;
 							workspaces.openPath((0, _deepseek_ai_dsh_client_runtime_client.resolveWorkspacePath)(cwd, path)).catch(() => {});
 						},
-						loadOlder: () => {
-							scoped.loadOlder();
-						},
+						loadOlder: () => scoped.loadOlder(),
 						loadImage: (attachment) => conversation.resolveImage(sessionId, attachment),
 						inspectCall: (callId) => {
 							actions.setInspect({ callId });
