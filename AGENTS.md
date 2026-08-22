@@ -40,17 +40,17 @@ node_modules/          安装产物——绝不提交
 
 ## 发布纪律（每次功能改动完成后必须执行，用户明确要求）
 
-- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号必须高于 Git 历史和 Releases 中出现过的全部正式版本，严禁回退；当前发布版本是 `1.4.3`。
+- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号必须高于 Git 历史和 Releases 中出现过的全部正式版本，严禁回退；当前发布版本是 `1.4.5`。
 - 打包与审计通过后，**必须**把全部源码改动（`patches/`、`packages/`、`scripts/`、`main/`、`assets/`、文档、版本号）提交并推送 GitHub（`origin/main`）。`release/` 与 `node_modules/` 永不提交；若用户需要安装包进 GitHub，走 GitHub Release 挂附件。
 
 ## 关键实现约束（改代码前必读）
 
-- **上传增强 = 整文件补丁，不许改成字符串手术**：rc.2 的 conversation/apiproxy 增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 覆盖（原文件留 `.upstream-backup`）；workspace 与 web-frontend 保持官方 rc.2 实现。改动流程：改已装依赖文件 → 验证 → 同步回 `patches/` → `npm run upload:prepare` 再构建。
+- **上传增强 = 整文件补丁，不许改成字符串手术**：rc.2 的 conversation/apiproxy/agent-loop 增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 覆盖（原文件留 `.upstream-backup`）；workspace 与 web-frontend 保持官方 rc.2 实现。改动流程：改已装依赖文件 → 验证 → 同步回 `patches/` → `npm run upload:prepare` 再构建。
 - **file 块协议约束**：消息 wire 的 `file` 块只带元数据与路径，**不带字节**（字节存会话目录）；`desktopFileContent` 必须为每个 file 块附加 text 说明，且不得把 file 块当 image（`isImageFile` 双校验 MIME+扩展名）。文件卡片渲染依赖 durable content 里的 file 块，删除会话递归清理 `uploads/` 是预期行为。
 - **图标链路走主进程桥**：文件图标经 Host stdout `[desktop-event] {kind:'file-icon'}` → 主进程 `app.getFileIcon` → `executeJavaScript` 回注 → 页面转发 `resolveFileIcon`；与 `pick-folder` 原生目录选择器同一条双跳桥模式。页面侧必须按路径缓存 + in-flight 去重。
 - **zstd 解码必须留在子进程**：Electron 内置 Node 的 zstd 原生解码（同步/异步/流式）都会随机 SIGTRAP，任何「进程内解压」都是回归。用量扫描全部在 `assets/usage-scan.mjs` 子进程里，失败只丢刷新、不杀服务。
 - **Persistent Bash 使用官方 rc.2 实现**：不得再应用 rc.6 回植脚本或按网帖改提示符。`check-rc2-runtime.mjs` 必须同时确认 terminal 的受控 `PROMPT_COMMAND` / `stdin_read` 与 persistent tool 的 `stty -echo` / `waitReason === "stdin_read"`。
-- **原生多模态优先**：Vision 模型图片必须沿 rc.2 的附件准入 → 图片预处理 → DeepSeek Files API（失败时 inline 回退）路径发送；不得恢复旧 `desktopVisionMcpContent` 委派。普通文件/文件夹仍使用桌面 `file` 元数据块与工具可读路径。
+- **图片双路径**：Vision 模型（`deepseek-v4-flash-vision-exp` 等声明 image 模态的模型）图片必须沿 rc.2 的附件准入 → 图片预处理 → DeepSeek Files API（失败时 inline 回退）路径发送，不得改写 image 块。文本模型图片走桌面看图 MCP 委派：admit 按 `inputModalities` 决定 `delegateToVisionMcp`，委派时 `desktopVisionMcpContent` 保留 image 块（转录渲染）并追加 `[The user attached …` 桥接文本，`patches/agent-loop-index.js` 的 `stripDelegatedImages` 在请求边界把桥接消息里的 image 块剥离（模型请求不带图、避免适配器 UNSUPPORTED_CONTENT），模型经 `mcp__vision__describe_image` 读取本地对象路径看图；客户端 `contentParts` 用 `DESKTOP_VISION_BRIDGE_DISPLAY` 隐藏桥接文本。`decodeBase64` 必须留在 apiproxy 补丁内（rc.2 官方用 `admitEncodedImages`，桌面补丁内联了该流程，缺了会抛 ReferenceError 并被包装成 agent-busy）。普通文件/文件夹仍使用桌面 `file` 元数据块与工具可读路径。
 - **日志扫描是增量且不阻塞面板的**：会话日志是只追加的 zstd 帧流；扫描结果（mtime/size/frameEnd/按日用量）持久化在 `$DSH_HOME/desktop/usage-scan-cache.json`。用量 RPC 必须先返回缓存，再后台启动单飞增量扫描；不得重新让客户端等待 zstd 子进程。
 - **历史 Prompt 只在接受边界记录，且点击只做消息定位**：仅从根 agent 的 `agent/pre-step` claimed batch 记录 `source.kind === 'user'` 的文字，不监听 DOM 猜测发送、不记录草稿/系统注入/工具消息。每条新记录必须携带 `sessionId`（`String(agent.id)`）和原始 `message.id`；历史只能写入 `$DSH_HOME/desktop/prompt-history.json`，上限 100 条、单条 64 KiB、权限 600；`promptHistory` remote 必须按 sessionId 过滤，时间轴只显示当前会话。点击时间轴严禁调用 `inputActions.setDraft()`，必须派发 `dsh-desktop:navigate-prompt`，由 ChatView 按 messageId 精确定位；旧记录回退同文本 + 最接近时间。目标未投影时自动逐页 `loadOlder()`，聊天滚到顶部 48px 内也自动加载；不得重新渲染「加载更早」按钮。
 - **被中断 Prompt 的编辑必须走正式输入状态机**：ESC 停止生成后，只允许最后一条有文字的用户消息显示编辑入口；消息正文从该行 durable content 的 `contentParts()` 提取，不得引用 `actions(text)` 回调之外的 `text`。原位编辑器必须支持 Enter 重发、Shift+Enter 换行、Esc 取消；重发走当前会话 `inputActions.setDraft()` → `inputActions.submit()`，提交交接成功后才清编辑态。改动后运行 `npm run edit:check -- --installed`。

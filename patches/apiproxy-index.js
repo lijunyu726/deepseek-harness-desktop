@@ -893,6 +893,35 @@ const COLD_SUMMARY_BATCH_SIZE = 16;
 const DEFAULT_COLD_BLANK_PROBE_MAX_BYTES = 1024;
 /** Conversation message event types (the pagination counting unit). */
 const MESSAGE_TYPES = new Set(["user/message", "assistant/message"]);
+/** Decode the browser payload while rejecting non-canonical base64 forms. */
+function decodeBase64(data) {
+	const decoded = Buffer.from(data, "base64");
+	if (data.length === 0 || decoded.toString("base64") !== data) throw new AttachmentError("Image upload is not canonical base64.", "INVALID_IMAGE_BASE64");
+	return new Uint8Array(decoded);
+}
+/** Desktop-only delegation from GUI image parts to the configured vision MCP. */
+const DESKTOP_VISION_MCP_TOOL = "mcp__vision__describe_image";
+const DESKTOP_ATTACHMENT_ID = /^sha256:([a-f0-9]{64})$/;
+function desktopVisionMcpContent(ctx, content) {
+	const root = ctx.attachments.root;
+	if (typeof root !== "string" || root.length === 0) throw new AttachmentError("GUI image delegation requires the local Harness attachment store.", "VISION_MCP_LOCAL_STORE_REQUIRED");
+	return content.flatMap((block) => {
+		if (block.type !== "image") return [block];
+		const attachment = block.attachment;
+		const match = DESKTOP_ATTACHMENT_ID.exec(String(attachment.attachmentId));
+		if (match === null) throw new AttachmentError("GUI image delegation received an unsupported attachment identifier.", "VISION_MCP_ATTACHMENT_ID_UNSUPPORTED");
+		const digest = match[1];
+		const objectPath = `${root}/objects/${digest.slice(0, 2)}/${digest}`;
+		const label = attachment.name === void 0 ? "an image" : `the image named "${attachment.name}"`;
+		return [
+			block,
+			{
+				type: "text",
+				text: `[The user attached ${label} (${attachment.mediaType}, ${attachment.width}x${attachment.height}). It is stored locally at ${JSON.stringify(objectPath)}. You do not see the image directly. Before answering the user's request, call ${DESKTOP_VISION_MCP_TOOL} with this exact absolute path, then use the tool result as image evidence. Do not claim the tool result is a direct visual capability of the current model.]`
+			}
+		];
+	});
+}
 /** Validate one prompt as a batch before publishing any durable image object. */
 async function durablePromptContent(ctx, content) {
 	if (content.every((part) => part.type === "text" || part.type === "file")) {
@@ -2902,18 +2931,16 @@ function createApiProxy(ctx, defaults) {
 				const hasImage = content.some((part) => part.type === "image");
 				const admit = async () => {
 					try {
+						let delegateToVisionMcp = false;
 						if (hasImage) {
 							const current = selectionFor(agent).current;
 							const modelInfo = await ctx.llm.resolveModelInfo(current.provider, current.model);
-							if (modelInfo.inputModalities !== void 0 && !modelInfo.inputModalities.includes("image")) return err(request, {
-								code: "attachment-error",
-								message: `Model "${current.model}" does not support image input.`,
-								details: { reason: "MODEL_DOES_NOT_SUPPORT_IMAGES" }
-							});
+							delegateToVisionMcp = modelInfo.inputModalities?.includes("image") !== true;
 						}
 						const durableContent = await durablePromptContent(ctx, content);
+						const modelContent = delegateToVisionMcp ? desktopVisionMcpContent(ctx, durableContent) : durableContent;
 						const message = createUserMessage({
-							content: desktopFileContent(durableContent),
+							content: desktopFileContent(modelContent),
 							source
 						});
 						if (mode === "steer") agent.steer(message);

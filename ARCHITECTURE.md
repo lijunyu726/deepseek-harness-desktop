@@ -44,16 +44,26 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 输入 `@` 触发会话候选菜单。候选按会话 id 去重；同标题（且同创建日）的会话追加短 id 尾缀区分。提交时序列化为 `dsh-session:` URI，主机端在 `agent/pre-step` 由 session-reference resolver 解析并注入快照上下文；解析失败不阻断回合。
 
-## 官方 rc.2 原生多模态
+## 图片双路径（rc.2 原生多模态 + 看图 MCP 委派）
 
-`@deepseek-ai/dsh-llm-deepseek@0.1.1-rc.2` 原生发布 `deepseek-v4-flash-vision-exp`（text+image）。图片经附件存储与预算化预处理后优先上传 DeepSeek Files API，按 endpoint/API-key/variant 复用 `file_id`；解析失败时整次请求切换为相同派生图片的 inline 表示。`patches/apiproxy-index.js` 保留 `admitEncodedImages` 路径，只在 durable content 中增加普通 `file` 块及工具可读说明，不再生成 `desktopVisionMcpContent`。`check-rc2-runtime.mjs` 同时验证模型、Files API 与官方 Persistent Bash 标记。
+`@deepseek-ai/dsh-llm-deepseek@0.1.1-rc.2` 原生发布 `deepseek-v4-flash-vision-exp`（text+image）。Vision 模型图片沿官方链路：附件存储与预算化预处理后优先上传 DeepSeek Files API，按 endpoint/API-key/variant 复用 `file_id`；解析失败时整次请求切换为相同派生图片的 inline 表示。
+
+文本模型（`inputModalities` 不含 image）的 GUI 图片走桌面看图 MCP 委派：
+
+1. `patches/apiproxy-index.js` 的 `durablePromptContent` 先用 `decodeBase64` 校验并 `saveImage` 落盘（缺失 `decodeBase64` 会抛 ReferenceError 并被 admit 包装成 agent-busy）；
+2. admit 按模型模态决定 `delegateToVisionMcp`，委派时 `desktopVisionMcpContent` 保留 image 块并追加 `[The user attached …` 桥接文本（含 `mcp__vision__describe_image` 工具名与本地对象路径）；
+3. `patches/agent-loop-index.js` 的 `stripDelegatedImages` 在 `buildRequest` 边界剥离桥接消息的 image 块——转录仍渲染图片，模型请求只有桥接文本；
+4. 模型调用 `mcp__vision__describe_image` 读图，工具结果经普通工具循环回到对话；客户端 `contentParts` 用 `DESKTOP_VISION_BRIDGE_DISPLAY` 隐藏桥接文本。
+
+`check-rc2-runtime.mjs` 验证模型、Files API 与官方 Persistent Bash 标记。
 
 ## 上传增强（v1.3.0）
 
-两个 rc.2 上游包（conversation / apiproxy）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。workspace 与 web-frontend 保持官方 rc.2 的归档生命周期和附件 slot 实现。
+三个 rc.2 上游包（conversation / apiproxy / agent-loop）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。workspace 与 web-frontend 保持官方 rc.2 的归档生命周期和附件 slot 实现。
 
 - **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消）、历史 Prompt 稳定消息定位与顶部自动分页。
-- **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
+- **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content（图片则 `decodeBase64` 校验 + `validateImage`/`saveImage` 落盘）；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；admit 按模态委派 `desktopVisionMcpContent`（看图 MCP 桥接）；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
+- **agent-loop 补丁**：`buildRequest` 边界 `stripDelegatedImages` 剥离带桥接文本的 user 消息里的 image 块，让文本模型请求只含桥接文本。
 - **官方 attachment slot**：图片草稿与消息图库走 rc.2 的 `conversation.input.attachments` / `conversation.message.images`；桌面 conversation 覆盖只为普通文件另渲染元数据 chip/卡片，不修改 web-frontend 的哈希 bundle。
 - **插件（packages/dsh-desktop）**：`saveUploadFile`（base64 → `~/.dsh/sessions/<项目>/<会话ID>/uploads/`，找不到会话目录回退 `~/.dsh/uploads/<会话ID>/`）、`copyFolderUpload`（整体递归复制，2000 文件/200MB/深度 8）、`pickFolderNative`/`resolvePickFolder`（主进程原生目录选择器桥）、`getFileIcon`/`resolveFileIcon`（macOS 图标桥）；客户端侧纯上传菜单、`SessionIdTracker`、`__DSH_SAVE_UPLOAD__`/`__DSH_GET_FILE_ICON__` 页面桥、ESC 编辑状态机。编辑重发只能走当前会话 `inputActions.setDraft()` → `inputActions.submit()`，成功交接后才清除原位编辑态。
 - **主进程（main/main.mjs）**：`pick-folder` 与 `file-icon` 两种 desktop-event 处理（dialog.showOpenDialog / app.getFileIcon → `executeJavaScript` 回注）。

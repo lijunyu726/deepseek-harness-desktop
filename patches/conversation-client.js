@@ -5252,6 +5252,8 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region lib/types/client/chat/MessageItem.js
+		/** Desktop vision bridge: description text hidden from the transcript display. */
+		const DESKTOP_VISION_BRIDGE_DISPLAY = "[The user attached ";
 		function contentParts(content) {
 			const texts = [];
 			const images = [];

@@ -135,15 +135,17 @@ Electron 打包采用运行时白名单，只包含 `main/`、`assets/`、`packa
 
 当前桌面端直接使用官方 DSH `0.1.1-rc.2`，不再向依赖树回植旧补丁。官方运行时本身已经在 `dsh-terminal-bash` 的 `PROMPT_COMMAND` 中重设受控 `PS1`，持久 Bash 工具初始化只关闭 echo，并以 `stdin_read` 信号快速结算。`npm run upstream:check` / `npm run bash:check` 会同时核对协议两侧；`npm run benchmark:bash` 则直接加载打包 `.app` 内的模块做真实 PTY 回归，避免把静态标记误当成实际性能。
 
-## DeepSeek rc.2 原生多模态
+## DeepSeek rc.2 原生多模态 + 看图 MCP 委派
 
-官方 rc.2 默认公布 `deepseek-v4-flash`、`deepseek-v4-pro` 和 `deepseek-v4-flash-vision-exp`。只有 Vision 型号声明 `inputModalities: [text, image]`；普通 Flash/Pro 保持文本输入。会话发送图片前按当前模型能力检查，不能靠改声明把文本模型伪装成视觉模型。
+官方 rc.2 默认公布 `deepseek-v4-flash`、`deepseek-v4-pro` 和 `deepseek-v4-flash-vision-exp`。只有 Vision 型号声明 `inputModalities: [text, image]`；普通 Flash/Pro 保持文本输入。
 
-Vision 请求沿官方链路处理：附件内容寻址落盘，按模型预算自动缩放和选择 PNG/WebP/JPEG 编码，优先 `POST /files` 并缓存可复用 `file_id`；文件解析失败或超时时，用相同派生图片重建整次请求并回退内联 base64，不在同一请求混用两种表示。桌面补丁只额外保留普通文件/文件夹的 `file` 元数据块，不改写 image 块，也不再把 GUI 图片强制委派给 vision MCP。
+**Vision 模型**：图片沿官方链路处理——附件内容寻址落盘，按模型预算自动缩放和选择 PNG/WebP/JPEG 编码，优先 `POST /files` 并缓存可复用 `file_id`；文件解析失败或超时时，用相同派生图片重建整次请求并回退内联 base64，不在同一请求混用两种表示。
+
+**文本模型**：拖入图片后由桌面补丁自动委派给「看图 MCP」——图片先落盘到本地附件库，消息保留图片块（聊天内正常显示）并附加一段桥接说明，模型请求边界剥离图片字节，模型调用 `mcp__vision__describe_image` 读取本地路径后把描述作为工具结果用于回答。委派只在模型确实不支持图片输入时启用；能看图的模型永远走原生多模态路径。
 
 `scripts/check-rc2-runtime.mjs` 会核对官方版本、Vision 模型、Files API 和 Bash 快速路径，最终 `.app` 也在 Release 审计阶段复测。依赖版本或结构漂移会直接阻止打包，不能通过编辑 `.app` 内文件绕过。
 
-设置中的 `vision` MCP 管理仍保留，供 Agent 主动读取任意本地图片路径或给其他文本模型显式调用；它不再是 Vision 模型拖放图片的必经链路，其 API Key 也不会进入仓库或安装包。
+设置中的 `vision` MCP 管理保留，供 Agent 主动读取任意本地图片路径，也是文本模型拖放图片的委派目标；其 API Key 不会进入仓库或安装包。
 
 图片桥接不绕过当前对话模型的计费和额度：MCP 看图成功后，DeepSeek 仍需一次可用的文本推理请求来发起工具调用并生成最终回答。DeepSeek 账户余额不足时，文字和图片消息都会在模型请求处失败。
 
