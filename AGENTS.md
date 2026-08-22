@@ -45,7 +45,8 @@ node_modules/          安装产物——绝不提交
 
 ## 关键实现约束（改代码前必读）
 
-- **上传增强 = 整文件补丁，不许改成字符串手术**：rc.2 的 conversation/apiproxy/agent-loop 增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 覆盖（原文件留 `.upstream-backup`）；workspace 与 web-frontend 保持官方 rc.2 实现。改动流程：改已装依赖文件 → 验证 → 同步回 `patches/` → `npm run upload:prepare` 再构建。
+- **上传增强 = 整文件补丁，不许改成字符串手术**：rc.2 的 conversation/apiproxy/agent-loop 增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 覆盖（原文件留 `.upstream-backup`）；workspace 与 web-frontend 保持官方 rc.2 实现（旧 `workspace-client.js` / `web-frontend-bundle.js` 覆盖已随 rc.2 移除，2026-08-22 起不再保留死文件）。改动流程：改已装依赖文件 → 验证 → 同步回 `patches/` → `npm run upload:prepare` 再构建。
+- **删除会话只有归档管理一个入口**：工作区/侧边栏会话行不提供「删除会话」（官方 rc.2 的 workspace 行菜单只有重命名/复制/归档；v1.4.2 的行内删除来自已废弃的 workspace-client 覆盖，已砍掉）。永久删除统一在「设置 → 归档管理」：`deleteSessions` remote → 逐会话委托 ApiProxy `workspace.deleteSession`（停活体 agent → 解绑注册 → 删持久日志），支持单选（行内二次确认）与多选批量（顶部批量条确认）。不得为恢复行内删除重新引入 workspace-client 覆盖。
 - **file 块协议约束**：消息 wire 的 `file` 块只带元数据与路径，**不带字节**（字节存会话目录）；`desktopFileContent` 必须为每个 file 块附加 text 说明，且不得把 file 块当 image（`isImageFile` 双校验 MIME+扩展名）。文件卡片渲染依赖 durable content 里的 file 块，删除会话递归清理 `uploads/` 是预期行为。
 - **图标链路走主进程桥**：文件图标经 Host stdout `[desktop-event] {kind:'file-icon'}` → 主进程 `app.getFileIcon` → `executeJavaScript` 回注 → 页面转发 `resolveFileIcon`；与 `pick-folder` 原生目录选择器同一条双跳桥模式。页面侧必须按路径缓存 + in-flight 去重。
 - **zstd 解码必须留在子进程**：Electron 内置 Node 的 zstd 原生解码（同步/异步/流式）都会随机 SIGTRAP，任何「进程内解压」都是回归。用量扫描全部在 `assets/usage-scan.mjs` 子进程里，失败只丢刷新、不杀服务。
