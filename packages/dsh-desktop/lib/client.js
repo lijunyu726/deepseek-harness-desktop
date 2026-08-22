@@ -2153,30 +2153,37 @@ window.__ModuleLoader__.load({
       }, [])
 
       const stops = react.useMemo(() => {
-        // DeepSeek uses one compact effort-only track for the selected model.
-        // Vision Flash reuses the Flash sprite family until dedicated artwork
-        // exists; the visible model label still remains distinct.
+        // DeepSeek uses a fixed three-stop MODEL track: Vision Max → Flash
+        // Max → Pro Max. Dragging switches the model (effort pinned to its
+        // max tier); fine-grained effort control lives in the expanded 高级
+        // pane. The default model (deepseek-v4-flash) is the middle stop.
         if (current?.provider === 'deepseek-official') {
           const group = (groups ?? []).find((g) => g.id === 'deepseek-official')
           if (group === undefined) return []
-          const model = (group.models ?? []).find((entry) => entry.id === current.model)
-          if (model === undefined) return []
-          const modelVisual = DEEPSEEK_MODEL_VISUALS[model.id] ?? { label: model.name ?? model.id, family: 'flash' }
-          const effortVisuals = DEEPSEEK_EFFORT_VISUALS[modelVisual.family] ?? DEEPSEEK_EFFORT_VISUALS.flash
-          return (model.reasoning?.efforts ?? []).flatMap((effort) => {
-            const visual = effortVisuals[effort.id]
-            if (visual === undefined) return []
-            return [{
+          const ORDER = ['deepseek-v4-flash-vision-exp', 'deepseek-v4-flash', 'deepseek-v4-pro']
+          const track = []
+          for (const modelId of ORDER) {
+            const model = (group.models ?? []).find((entry) => entry.id === modelId)
+            if (model === undefined) continue
+            const efforts = model.reasoning?.efforts ?? []
+            const maxEffort = efforts.find((e) => e.id === 'max') ?? efforts[efforts.length - 1]
+            if (maxEffort === undefined) continue
+            const modelVisual = DEEPSEEK_MODEL_VISUALS[model.id] ?? { label: model.name ?? model.id, family: 'flash' }
+            const effortVisuals = DEEPSEEK_EFFORT_VISUALS[modelVisual.family] ?? DEEPSEEK_EFFORT_VISUALS.flash
+            const visual = effortVisuals[maxEffort.id] ?? effortVisuals.max
+            if (visual === undefined) continue
+            track.push({
               provider: group.id,
               model: model.id,
-              effort: effort.id,
+              effort: maxEffort.id,
               modelName: model.name ?? model.id,
-              effortName: effort.name ?? effort.id,
+              effortName: maxEffort.name ?? maxEffort.id,
               modelLabel: modelVisual.label,
               sprite: visual.sprite,
               duration: visual.duration,
-            }]
-          })
+            })
+          }
+          return track
         }
         // Other vendors: adapt the stops to the CURRENT model's own
         // reasoning efforts (whatever the catalog reports).
@@ -2234,6 +2241,9 @@ window.__ModuleLoader__.load({
 
       const stopIndex = react.useMemo(() => {
         if (stops.length === 0 || current === null) return 0
+        // Exact model+effort match first (third-party effort tracks); the
+        // DeepSeek three-stop track falls back to a model-only match so a
+        // session running e.g. Flash·high still highlights the Flash stop.
         let idx = stops.findIndex((s) => s.model === current.model && s.effort === current.reasoningEffort)
         if (idx === -1) {
           const defaultEffort = (groups ?? [])
@@ -2241,6 +2251,7 @@ window.__ModuleLoader__.load({
             ?.find((m) => m.id === current.model)?.reasoning?.defaultEffort
           idx = stops.findIndex((s) => s.model === current.model && s.effort === defaultEffort)
         }
+        if (idx === -1) idx = stops.findIndex((s) => s.model === current.model)
         return idx === -1 ? 0 : idx
       }, [stops, current, groups])
 

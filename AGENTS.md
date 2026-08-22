@@ -40,7 +40,7 @@ node_modules/          安装产物——绝不提交
 
 ## 发布纪律（每次功能改动完成后必须执行，用户明确要求）
 
-- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号必须高于 Git 历史和 Releases 中出现过的全部正式版本，严禁回退；当前发布版本是 `1.4.5`。
+- 改动经「验证方式」确认后，先递增根 `package.json` 版本号，再 `npm run dist` 在 `release/` 打出新版本 DMG+zip；`audit:release` 未通过的产物不得交付。版本号必须高于 Git 历史和 Releases 中出现过的全部正式版本，严禁回退；当前发布版本是 `1.4.6`。
 - 打包与审计通过后，**必须**把全部源码改动（`patches/`、`packages/`、`scripts/`、`main/`、`assets/`、文档、版本号）提交并推送 GitHub（`origin/main`）。`release/` 与 `node_modules/` 永不提交；若用户需要安装包进 GitHub，走 GitHub Release 挂附件。
 
 ## 关键实现约束（改代码前必读）
@@ -57,7 +57,7 @@ node_modules/          安装产物——绝不提交
 - **被中断 Prompt 的编辑必须走正式输入状态机**：ESC 停止生成后，只允许最后一条有文字的用户消息显示编辑入口；消息正文从该行 durable content 的 `contentParts()` 提取，不得引用 `actions(text)` 回调之外的 `text`。原位编辑器必须支持 Enter 重发、Shift+Enter 换行、Esc 取消；重发走当前会话 `inputActions.setDraft()` → `inputActions.submit()`，提交交接成功后才清编辑态。改动后运行 `npm run edit:check -- --installed`。
 - **路径自愈**：插件内所有定位 app 资源（usage-scan.mjs、vision-server.mjs 模板）都用「模块目录相对路径 + `process.execPath` 回退」双候选；`ensureVisionCommand` 会在启动时把 vision MCP 行的 `command` 从系统 `node` 改写为应用自带 Node（app 移动后自动重写）。**不要把绝对路径写死在插件里。**
 - **插槽优先级**：接管 shell 的单席位要用比 0 更低的 priority（鲸鱼变阻器用 -10）。
-- **鲸鱼图集契约**：素材固定为 `flash-off/high/max`、`pro-off/high/max`；每张是 1056×512、6×4 网格、24 帧、176×128 单元格的带透明通道无损 WebP。变阻器只显示**当前模型**的官方 effort 顺序；模型身份由高级菜单切换。Vision 临时复用 Flash 图集，Low 复用对应 High 图集但降低播放速度。不得把三个模型串成 9/12 档长轨道。
+- **鲸鱼图集契约**：素材固定为 `flash-off/high/max`、`pro-off/high/max`；每张是 1056×512、6×4 网格、24 帧、176×128 单元格的带透明通道无损 WebP。DeepSeek 变阻器是**固定三档模型轨道**：`Vision Max → Flash Max → Pro Max`（Vision 复用 Flash 图集，界面仍明确显示 Vision；Flash 为默认模型居中间档），拖动/点击档位即 `sessions.selectModel` 切换模型并固定 `max` effort；effort 精细调节在「高级」面板（模型/供应商/思考强度三个子页）。非 DeepSeek 供应商仍按当前模型的实际 effort 档位生成轨道。不得把三个模型串成 9/12 档长轨道。
 - **客户端连接面**：Typert 远程走 `connection.rpc.call('/api', 'globalInstructions/<m>')`；shell 原生 unary 走 `connection.api.sessions/llm/...`（不是 `connection.sessions`）。
 - **版本单一来源**：应用/DMG 版本来自根 `package.json`；启动页通过 `app.getVersion()` 接收该版本，不得再硬编码展示版本号。dsh 上游依赖版本可单独出现在诊断信息中，但不能冒充桌面应用版本。
 - **安全围栏**：`settings.describe`/`credentials.*` 被 dsh 硬锁回环地址，手机端会 403——这是上游安全设计，不要试图在补丁里放宽。
