@@ -5660,6 +5660,13 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** User and admitted-steering keyed Chat renderer. */
+		const NOOP_EDIT_SUBSCRIBE = () => () => {};
+		const EMPTY_EDIT_SNAPSHOT = () => null;
+		/** Desktop edit bridge: subscribe to the plugin's window edit store (vanilla). */
+		function useDshEditStore() {
+			const store = typeof window === "undefined" || window.__dshEditStore === void 0 ? null : window.__dshEditStore;
+			return (0, react.useSyncExternalStore)(store === null ? NOOP_EDIT_SUBSCRIBE : store.subscribe, store === null ? EMPTY_EDIT_SNAPSHOT : store.getSnapshot, EMPTY_EDIT_SNAPSHOT);
+		}
 		const UserMessageNodeView = (0, react.memo)(function UserMessageNodeView({ node, renderMessageImages, t }) {
 			const data = node.data;
 			const messageText = contentParts(data.content).text;

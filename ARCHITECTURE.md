@@ -61,7 +61,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 三个 rc.2 上游包（conversation / apiproxy / agent-loop）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。workspace 与 web-frontend 保持官方 rc.2 的归档生命周期和附件 slot 实现（v1.4.2 的 `workspace-client.js` / `web-frontend-bundle.js` 覆盖已随 rc.2 移除并清理，工作区会话行不再提供删除入口，删除统一在归档管理）。
 
-- **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消）、历史 Prompt 稳定消息定位与顶部自动分页。
+- **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消；`useDshEditStore` 经 `useSyncExternalStore` 桥接插件 `window.__dshEditStore`）、历史 Prompt 稳定消息定位与顶部自动分页。
 - **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content（图片则 `decodeBase64` 校验 + `validateImage`/`saveImage` 落盘）；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；admit 按模态委派 `desktopVisionMcpContent`（看图 MCP 桥接）；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
 - **agent-loop 补丁**：`buildRequest` 边界 `stripDelegatedImages` 剥离带桥接文本的 user 消息里的 image 块，让文本模型请求只含桥接文本。
 - **官方 attachment slot**：图片草稿与消息图库走 rc.2 的 `conversation.input.attachments` / `conversation.message.images`；桌面 conversation 覆盖只为普通文件另渲染元数据 chip/卡片，不修改 web-frontend 的哈希 bundle。
