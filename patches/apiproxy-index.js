@@ -2911,9 +2911,7 @@ function createApiProxy(ctx, defaults) {
 								details: { reason: "MODEL_DOES_NOT_SUPPORT_IMAGES" }
 							});
 						}
-						signal?.throwIfAborted();
 						const durableContent = await durablePromptContent(ctx, content);
-						signal?.throwIfAborted();
 						const message = createUserMessage({
 							content: desktopFileContent(durableContent),
 							source
