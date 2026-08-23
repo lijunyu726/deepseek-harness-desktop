@@ -314,8 +314,8 @@ window.__ModuleLoader__.load({
     // 第一个，官方列表同名会话罕见，可接受）。官方行类名（YDXeBa_*）为
     // 构建产物 hash，升级官方包后需同步核对。
     const JOBS_BADGE_CSS = [
-      '.dsh-jobs-badge{display:inline-flex;align-items:center;gap:4px;flex:none;margin-left:4px;padding:0 6px;height:18px;border-radius:999px;background:rgba(87,116,254,0.15);border:1px solid rgba(103,158,254,0.4);color:#8ab4ff;font-size:11px;line-height:18px;white-space:nowrap;pointer-events:none}',
-      '.dsh-jobs-badge-dot{width:6px;height:6px;border-radius:50%;background:#679efe;box-shadow:0 0 5px rgba(103,158,254,0.9);animation:dsh-jobs-pulse 1.6s ease-in-out infinite;flex:none}',
+      '.dsh-jobs-badge{display:inline-flex;align-items:center;flex:none;margin-left:4px;width:16px;height:16px;color:#8ab4ff;pointer-events:none}',
+      '.dsh-jobs-badge svg{width:16px;height:16px;flex:none;filter:drop-shadow(0 0 4px rgba(103,158,254,0.8));animation:dsh-jobs-pulse 1.6s ease-in-out infinite}',
       '@keyframes dsh-jobs-pulse{0%,100%{opacity:1}50%{opacity:0.35}}',
     ].join('')
     const JOBS_BADGE_SVG = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="7.5" y="1.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="13.5" y="1.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="1.5" y="7.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="7.5" y="7.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="13.5" y="7.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="1.5" y="13.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="7.5" y="13.5" width="4" height="4" rx="0.8" fill="currentColor"/></svg>'
@@ -365,7 +365,7 @@ window.__ModuleLoader__.load({
             const badge = document.createElement('span')
             badge.className = BADGE_CLASS
             badge.title = `${count} 个后台任务运行中`
-            badge.innerHTML = `<span class="dsh-jobs-badge-dot"></span>${JOBS_BADGE_SVG}<span>${count} 运行中</span>`
+            badge.innerHTML = JOBS_BADGE_SVG
             const timeEl = row.querySelector('.YDXeBa_time')
             row.insertBefore(badge, timeEl === null ? null : timeEl)
           }
