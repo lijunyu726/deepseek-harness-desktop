@@ -304,6 +304,80 @@ window.__ModuleLoader__.load({
      * 客户端会话基线，被删会话立刻从侧边栏消失，不会残留在「未分组」。
      * remote 内部每步都有超时兜底，客户端另有总超时，界面绝不会卡死。
      */
+    // — Sidebar jobs badges ------------------------------------------------
+    // 侧边栏会话行注入「后台任务运行中」徽标。官方 workspace 行状态点只
+    // 覆盖回合/子代理，后台任务（如 strix）跑着时行上没有任何标记，容易
+    // 误判「没有 agent 在跑」。本组件挂输入区（常驻、return null），用
+    // useSessions 订阅全局 jobsBySession（与官方 JobListAction 同源），
+    // 通过 MutationObserver 把徽标插进侧边栏会话行（行内标题文本 ↔
+    // store byId 标题匹配；displayTitle 优先，title 兜底；标题重复时取
+    // 第一个，官方列表同名会话罕见，可接受）。官方行类名（YDXeBa_*）为
+    // 构建产物 hash，升级官方包后需同步核对。
+    const JOBS_BADGE_CSS = [
+      '.dsh-jobs-badge{display:inline-flex;align-items:center;gap:4px;flex:none;margin-left:4px;padding:0 6px;height:18px;border-radius:999px;background:rgba(87,116,254,0.15);border:1px solid rgba(103,158,254,0.4);color:#8ab4ff;font-size:11px;line-height:18px;white-space:nowrap;pointer-events:none}',
+      '.dsh-jobs-badge-dot{width:6px;height:6px;border-radius:50%;background:#679efe;box-shadow:0 0 5px rgba(103,158,254,0.9);animation:dsh-jobs-pulse 1.6s ease-in-out infinite;flex:none}',
+      '@keyframes dsh-jobs-pulse{0%,100%{opacity:1}50%{opacity:0.35}}',
+    ].join('')
+    const JOBS_BADGE_SVG = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="7.5" y="1.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="13.5" y="1.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="1.5" y="7.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="7.5" y="7.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="13.5" y="7.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="1.5" y="13.5" width="4" height="4" rx="0.8" fill="currentColor"/><rect x="7.5" y="13.5" width="4" height="4" rx="0.8" fill="currentColor"/></svg>'
+    function JobsBadgeController({ useSessions }) {
+      const jobsBySession = useSessions((s) => s.jobsBySession)
+      const byId = useSessions((s) => s.byId)
+      react.useEffect(() => {
+        if (document.getElementById('dsh-jobs-badge-css') === null) {
+          const style = document.createElement('style')
+          style.id = 'dsh-jobs-badge-css'
+          style.textContent = JOBS_BADGE_CSS
+          document.head.appendChild(style)
+        }
+        const ROW_SELECTOR = '.YDXeBa_sessionRow'
+        const TITLE_SELECTOR = '.YDXeBa_title'
+        const BADGE_CLASS = 'dsh-jobs-badge'
+        const applyBadges = () => {
+          if (jobsBySession === undefined || jobsBySession === null || byId === undefined || byId === null) return
+          // sessionId → live 后台任务数（running/stopping 视为活跃）
+          const live = new Map()
+          for (const sid of Object.keys(jobsBySession)) {
+            const jobs = jobsBySession[sid]
+            const n = (Array.isArray(jobs) ? jobs : []).filter((j) => j.status === 'running' || j.status === 'stopping').length
+            if (n > 0) live.set(sid, n)
+          }
+          // 标题 → sessionId 索引（displayTitle 优先，title 兜底）
+          const byTitle = new Map()
+          for (const sid of Object.keys(byId)) {
+            const entry = byId[sid]
+            if (entry === undefined) continue
+            const title = entry.displayTitle ?? entry.title
+            if (typeof title !== 'string' || title === '') continue
+            if (!byTitle.has(title)) byTitle.set(title, sid)
+          }
+          // 扫描会话行
+          for (const row of document.querySelectorAll(ROW_SELECTOR)) {
+            const titleEl = row.querySelector(TITLE_SELECTOR)
+            const title = titleEl?.textContent?.trim() ?? ''
+            const sid = title === '' ? undefined : byTitle.get(title)
+            const count = sid === undefined ? undefined : live.get(sid)
+            const existing = row.querySelector('.' + BADGE_CLASS)
+            if (count === undefined || count === 0) {
+              if (existing !== null) existing.remove()
+              continue
+            }
+            if (existing !== null) continue
+            const badge = document.createElement('span')
+            badge.className = BADGE_CLASS
+            badge.title = `${count} 个后台任务运行中`
+            badge.innerHTML = `<span class="dsh-jobs-badge-dot"></span>${JOBS_BADGE_SVG}<span>${count} 运行中</span>`
+            const timeEl = row.querySelector('.YDXeBa_time')
+            row.insertBefore(badge, timeEl === null ? null : timeEl)
+          }
+        }
+        applyBadges()
+        const observer = new MutationObserver(applyBadges)
+        observer.observe(document.body, { childList: true, subtree: true })
+        return () => observer.disconnect()
+      }, [jobsBySession, byId])
+      return null
+    }
+
     function ArchivesSection({ gateway, useSessions, useWorkspaces }) {
       const [notice, setNotice] = react.useState({ text: '', kind: '' })
       const [busyId, setBusyId] = react.useState(null)
@@ -2869,6 +2943,8 @@ window.__ModuleLoader__.load({
       const navObserver = new MutationObserver(scheduleNavIcons)
       navObserver.observe(document.body, { childList: true, subtree: true })
       scheduleNavIcons()
+
+
       const unwrap = (r) => {
         if (r && r.ok) return r.value ?? {}
         return { ok: false, error: (r && r.error && (r.error.message || r.error.code)) || 'RPC 失败' }
@@ -3324,6 +3400,16 @@ window.__ModuleLoader__.load({
             order: 90,
           },
           PriceHoursHint,
+        ),
+      )
+      ctx.slots.inject('conversation.input.right', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.input.right',
+            id: 'dsh-jobs-badge',
+            order: 95,
+          },
+          JobsBadgeController,
         ),
       )
       // Take the named model seat: the whale rheostat replaces the shell's
