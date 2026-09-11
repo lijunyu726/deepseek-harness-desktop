@@ -154,14 +154,23 @@ registry 类里补回这两个方法（对上游差异 56 行）：
 代价：普通文件失去 macOS 真实图标与点击显示路径（原生卡片按扩展名给图标）。
 文件夹上传保留——它是实测确认的原生硬缺口。
 
-### 具体接入点
+### 具体接入点（估计已修正）
 
-`serializeDraftAttachments` 里，在图片分支之后、收据分支之前插入文件夹分支：
-draft 附件的 `file.__dshFolderPath` 非空时，产出一对文本
-（`📁 文件夹：<名> → <路径>` 供芯片渲染 + `[The user attached the folder …]` 供模型读），
-其余文件落回原生收据分支。注意返回结构由 `map` 改为 `flatMap` 语义（一个附件产出
-两个 part），且 `serializeAttachments()`（约 :2922）与队列路径（约 :2950）两处调用点
-都要覆盖。
+⚠️ 前一版估计「约 15 行」偏乐观，本轮细查后修正：0.1.5 的 `browserDraftAttachment`
+**只处理图片**（`kind: "image"`，带 `previewUrl`），普通文件走后台上传通道，
+**文件夹在 0.1.5 的 composer 里没有任何通道**。因此要接进来需要：
+
+1. draft store 里新增一种文件夹描述符（现只有 image 描述符 + 文件上传记录）；
+2. 接入 intake 路径（0.1.5 的 `intakeImages` 已不存在，需定位新的入口）；
+3. `serializeDraftAttachments` 增加文件夹分支（`map` → `flatMap` 语义，一个附件
+   产出两个 part）；
+4. `serializeAttachments()`（约 :2922）与队列路径（约 :2950）两处调用点都要覆盖；
+5. chat 侧的芯片渲染分支。
+
+**更省的做法**：让文件夹根本不进附件管线——宿主主进程已经持有文件夹选择器与
+`__dshFolderPath`，直接把 `📁 文件夹：<名> → <路径>` 作为**文本**塞进 composer 草稿
+（复用类似 `__DSH_ADD_FILES__` 的桥接函数）。这样 composer 零改动，代价是草稿区
+不显示文件夹 chip（发送后才显示）。倾向这条。
 
 ## 覆盖层清单（当前）
 
