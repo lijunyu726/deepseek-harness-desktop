@@ -1349,9 +1349,120 @@ window.__ModuleLoader__.load({
 				})
 			});
 		}
+		const NOOP_EDIT_SUBSCRIBE = () => () => {};
+		const EMPTY_EDIT_SNAPSHOT = () => null;
+		/** Desktop edit bridge: subscribe to the plugin's window edit store (vanilla). */
+		function useDshEditStore() {
+			const store = typeof window === "undefined" || window.__dshEditStore === void 0 ? null : window.__dshEditStore;
+			return (0, react.useSyncExternalStore)(store === null ? NOOP_EDIT_SUBSCRIBE : store.subscribe, store === null ? EMPTY_EDIT_SNAPSHOT : store.getSnapshot, EMPTY_EDIT_SNAPSHOT);
+		}
 		/** User and admitted-steering keyed Chat renderer. */
 		const UserMessageNodeView = (0, react.memo)(function UserMessageNodeView({ node, renderMessageImages, t }) {
 			const data = node.data;
+			const messageText = contentParts(data.content).text;
+			const editState = useDshEditStore();
+			const editing = editState !== null && editState.editing !== null && editState.editing.key === node.key ? editState.editing : null;
+			const [editDraft, setEditDraft] = (0, react.useState)("");
+			(0, react.useEffect)(() => {
+				if (editing === null) return;
+				const textarea = document.querySelector("[data-dsh-edit-editor] textarea");
+				if (textarea instanceof HTMLTextAreaElement) {
+					textarea.focus();
+					const end = textarea.value.length;
+					textarea.setSelectionRange(end, end);
+				}
+			}, [editing?.key]);
+			// In-place editor for the last user turn: the plugin owns the entry point
+			// and the send/cancel actions, this only swaps the bubble for a textarea
+			// while that turn is being edited.
+			if (editing !== null) return (0, react_jsx_runtime.jsx)("div", {
+				className: MessageItem_module_css_default.userRow,
+				"data-dsh-edit-editor": true,
+				children: (0, react_jsx_runtime.jsxs)("div", {
+					style: {
+						width: "100%",
+						display: "flex",
+						flexDirection: "column",
+						alignItems: "flex-end",
+						gap: 8
+					},
+					children: [(0, react_jsx_runtime.jsx)("textarea", {
+						value: editDraft,
+						onChange: (e) => {
+							setEditDraft(e.target.value);
+						},
+						onKeyDown: (e) => {
+							if (e.key === "Escape") {
+								e.preventDefault();
+								e.stopPropagation();
+								if (typeof window !== "undefined" && typeof window.__dshEditCancel__ === "function") window.__dshEditCancel__();
+								return;
+							}
+							const composing = e.nativeEvent && e.nativeEvent.isComposing === true;
+							if (e.key === "Enter" && !e.shiftKey && !composing && editDraft.trim() !== "") {
+								e.preventDefault();
+								e.stopPropagation();
+								if (typeof window !== "undefined" && typeof window.__dshEditSend__ === "function") window.__dshEditSend__(editDraft);
+							}
+						},
+						rows: Math.min(10, Math.max(3, editDraft.split("\n").length + 1)),
+						"aria-label": "编辑消息",
+						style: {
+							boxSizing: "border-box",
+							width: "100%",
+							maxWidth: "var(--dsh-chat-content-width)",
+							padding: "10px 14px",
+							background: "var(--dsw-alias-bg-base)",
+							border: "1px solid var(--dsw-alias-border-l2)",
+							borderRadius: 12,
+							color: "var(--dsw-alias-label-primary)",
+							fontSize: 14,
+							lineHeight: "22px",
+							fontFamily: "inherit",
+							resize: "vertical",
+							outline: "none"
+						}
+					}), (0, react_jsx_runtime.jsxs)("div", {
+						style: {
+							display: "flex",
+							gap: 8
+						},
+						children: [(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							onClick: () => {
+								if (typeof window !== "undefined" && typeof window.__dshEditCancel__ === "function") window.__dshEditCancel__();
+							},
+							style: {
+								padding: "6px 16px",
+								background: "transparent",
+								border: "1px solid var(--dsw-alias-border-l2)",
+								borderRadius: 999,
+								color: "var(--dsw-alias-label-secondary)",
+								cursor: "pointer",
+								fontSize: 13
+							},
+							children: "取消"
+						}), (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							onClick: () => {
+								if (typeof window !== "undefined" && typeof window.__dshEditSend__ === "function") window.__dshEditSend__(editDraft);
+							},
+							disabled: editDraft.trim() === "",
+							style: {
+								padding: "6px 20px",
+								background: "var(--dsw-alias-button-info-fill)",
+								border: "none",
+								borderRadius: 999,
+								color: "#fff",
+								cursor: editDraft.trim() === "" ? "default" : "pointer",
+								fontSize: 13,
+								opacity: editDraft.trim() === "" ? 0.5 : 1
+							},
+							children: "发送"
+						})]
+					})]
+				})
+			});
 			return (0, react_jsx_runtime.jsx)(UserStyleBubble, {
 				content: data.content,
 				renderMessageImages,
