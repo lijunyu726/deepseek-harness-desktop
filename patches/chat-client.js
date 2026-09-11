@@ -1099,16 +1099,145 @@ window.__ModuleLoader__.load({
 		//#region lib/types/client/chat/MessageItem.js
 		/** Desktop vision bridge: description text hidden from the transcript display. */
 		const DESKTOP_VISION_BRIDGE_DISPLAY = "[The user attached ";
+		/** Parse the `📎 附件：…` / `📁 文件夹：…` captions the desktop shell sends
+		*  for attachments it stored itself (folders, whose bytes the official file
+		*  upload never sees). Produces the same shape as the native file card. */
+		function parseFileCaption(text) {
+			const fileMatch = /^📎 附件：(.+?) \(([^)]+)\)(?: → (.+))?$/.exec(text);
+			if (fileMatch !== null) return {
+				kind: "file",
+				name: fileMatch[1],
+				size: fileMatch[2],
+				path: fileMatch[3] ?? ""
+			};
+			const folderMatch = /^📁 文件夹：(.+?)(?: → (.+))?$/.exec(text);
+			if (folderMatch !== null) return {
+				kind: "folder",
+				name: folderMatch[1],
+				size: "",
+				path: folderMatch[2] ?? ""
+			};
+			return null;
+		}
+		/** Extension → emoji fallback for files without a resolvable disk icon. */
+		function fileEmoji(name, kind) {
+			if (kind === "folder") return "📁";
+			const ext = String(name ?? "").split(".").pop()?.toLowerCase() ?? "";
+			const map = {
+				pdf: "📕", doc: "📘", docx: "📘", xls: "📗", xlsx: "📗", csv: "📗",
+				ppt: "📙", pptx: "📙", zip: "🗜️", rar: "🗜️", "7z": "🗜️", gz: "🗜️", tar: "🗜️",
+				png: "🖼️", jpg: "🖼️", jpeg: "🖼️", gif: "🖼️", webp: "🖼️", svg: "🖼️",
+				txt: "📝", md: "📝", log: "📝", json: "🧾", pkg: "📦", dmg: "📦",
+				mp3: "🎵", wav: "🎵", mp4: "🎬", mov: "🎬", js: "📜", ts: "📜", py: "📜"
+			};
+			return map[ext] ?? "📄";
+		}
+		/** File/folder attachment card: the real macOS icon when the desktop shell
+		*  can resolve one, the extension emoji otherwise; clicking reveals the path. */
+		function FileAttachmentCard({ file }) {
+			const [open, setOpen] = (0, react.useState)(false);
+			const [iconUrl, setIconUrl] = (0, react.useState)(null);
+			(0, react.useEffect)(() => {
+				if (file.path === "" || typeof window === "undefined" || typeof window.__DSH_GET_FILE_ICON__ !== "function") return;
+				let alive = true;
+				window.__DSH_GET_FILE_ICON__(file.path).then((url) => {
+					if (alive && url !== null) setIconUrl(url);
+				}, () => {});
+				return () => {
+					alive = false;
+				};
+			}, [file.path]);
+			const displayName = file.name.length > 12 ? `${file.name.slice(0, 11)}…` : file.name;
+			return (0, react_jsx_runtime.jsxs)("div", {
+				style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4 },
+				children: [(0, react_jsx_runtime.jsx)("button", {
+					type: "button",
+					title: file.name,
+					"aria-label": file.name,
+					onClick: () => {
+						setOpen((prev) => !prev);
+					},
+					style: {
+						display: "flex",
+						flexDirection: "column",
+						alignItems: "center",
+						justifyContent: "center",
+						gap: 6,
+						width: 84,
+						height: 84,
+						boxSizing: "border-box",
+						padding: "8px 6px",
+						background: "var(--dsw-specific-selector)",
+						border: "1px solid var(--dsw-alias-border-l2)",
+						borderRadius: 12,
+						color: "var(--dsw-alias-label-primary)",
+						cursor: "pointer",
+						overflow: "hidden",
+						textAlign: "center"
+					},
+					children: [iconUrl !== null ? (0, react_jsx_runtime.jsx)("img", {
+						src: iconUrl,
+						alt: file.name,
+						style: { width: 36, height: 36, objectFit: "contain", flexShrink: 0 }
+					}) : (0, react_jsx_runtime.jsx)("span", {
+						"aria-hidden": true,
+						style: { fontSize: 30, lineHeight: 1 },
+						children: fileEmoji(file.name, file.kind)
+					}), (0, react_jsx_runtime.jsx)("span", {
+						style: {
+							fontSize: 11,
+							lineHeight: 1.3,
+							overflow: "hidden",
+							textOverflow: "ellipsis",
+							whiteSpace: "nowrap",
+							maxWidth: "100%"
+						},
+						children: displayName
+					}), (0, react_jsx_runtime.jsx)("span", {
+						style: {
+							fontSize: 10,
+							lineHeight: 1.2,
+							color: "var(--dsw-alias-label-secondary)",
+							overflow: "hidden",
+							textOverflow: "ellipsis",
+							whiteSpace: "nowrap",
+							maxWidth: "100%"
+						},
+						children: file.size
+					})]
+				}), open && file.path !== "" && (0, react_jsx_runtime.jsx)("div", {
+					title: file.path,
+					style: {
+						maxWidth: 200,
+						padding: "4px 8px",
+						background: "var(--dsw-alias-interactive-bg-hover)",
+						borderRadius: 8,
+						color: "var(--dsw-alias-label-secondary)",
+						fontSize: 10.5,
+						fontFamily: "'SF Mono', Menlo, Monaco, 'Courier New', monospace",
+						overflow: "hidden",
+						textOverflow: "ellipsis",
+						whiteSpace: "nowrap",
+						direction: "rtl",
+						textAlign: "left"
+					},
+					children: file.path
+				})]
+			});
+		}
 		function contentParts(content) {
 			const texts = [];
 			const attachments = [];
+			const files = [];
 			const rest = [];
 			for (const block of content) {
 				const b = block;
 				if (b.type === "text" && typeof b.text === "string") {
+					const caption = parseFileCaption(b.text);
+					if (caption !== null) files.push(caption);
 					// The vision bridge note is model-facing only; the local object path
 					// would otherwise appear verbatim in every image message.
-					if (!b.text.startsWith(DESKTOP_VISION_BRIDGE_DISPLAY)) texts.push(b.text);
+					else if (!b.text.startsWith(DESKTOP_VISION_BRIDGE_DISPLAY)) texts.push(b.text);
 				}
 				else if (b.type === "image" && b.attachment !== void 0) attachments.push({
 					type: "image",
@@ -1123,6 +1252,7 @@ window.__ModuleLoader__.load({
 			return {
 				text: texts.join(""),
 				attachments,
+				files,
 				rest
 			};
 		}
@@ -1237,7 +1367,7 @@ window.__ModuleLoader__.load({
 		}
 		/** Right-aligned bubble shared by user and steering rows. */
 		function UserStyleBubble({ content, renderMessageImages, actions, pending = false, echo = false, referenceLabels = [], skillNames = [], previewAttachments, t }) {
-			const { text, attachments: contentAttachments, rest } = contentParts(content);
+			const { text, attachments: contentAttachments, files, rest } = contentParts(content);
 			const attachments = previewAttachments ?? contentAttachments;
 			const compactImages = attachments.length > 1;
 			const truncated = (total) => t("json.truncated", { total });
@@ -1273,6 +1403,16 @@ window.__ModuleLoader__.load({
 									})]
 								})]
 							}, `file:${index}`))
+						}),
+						files.length > 0 && (0, react_jsx_runtime.jsx)("div", {
+							style: {
+								display: "flex",
+								flexWrap: "wrap",
+								justifyContent: "flex-end",
+								gap: 8,
+								marginBottom: 4
+							},
+							children: files.map((file, i) => (0, react_jsx_runtime.jsx)(FileAttachmentCard, { file }, i))
 						}),
 						showBubble && (0, react_jsx_runtime.jsxs)("div", {
 							className: MessageItem_module_css_default.bubble,

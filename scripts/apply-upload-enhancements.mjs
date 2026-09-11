@@ -72,7 +72,7 @@ const OVERLAYS = [
     // editor, and the history-rail prompt navigation with automatic paging.
     // Folder chips ride parseFileCaption (see MIGRATION-0.1.5.md: regular files
     // use the native 0.1.5 file card instead of a desktop chip).
-    markers: ['DESKTOP_VISION_BRIDGE_DISPLAY', 'data-dsh-edit-editor', 'promptTargetKey', 'revealPromptRow', 'olderRequestRef'],
+    markers: ['DESKTOP_VISION_BRIDGE_DISPLAY', 'data-dsh-edit-editor', 'promptTargetKey', 'revealPromptRow', 'olderRequestRef', 'parseFileCaption', 'FileAttachmentCard'],
   },
   {
     patch: 'conversation-client.js',
