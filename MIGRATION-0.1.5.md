@@ -172,6 +172,33 @@ registry 类里补回这两个方法（对上游差异 56 行）：
 （复用类似 `__DSH_ADD_FILES__` 的桥接函数）。这样 composer 零改动，代价是草稿区
 不显示文件夹 chip（发送后才显示）。倾向这条。
 
+## 模型配置：已切到 deepseek-flash（含一处会抵消收益的坑）
+
+`~/.dsh/settings.yaml` 在第 2 轮期间被改过（11:56，非本次迁移所为）：默认模型已切到
+`deepseek-flash`，并新增了一个 `llm-deepseek.models` 显式目录块（4 项）。
+
+**那个块会抵消升级的核心收益，已移除。** 原因（均已在 0.1.5 源码中核实）：
+
+- `dsh-llm-deepseek` 的 schema 是 `models: z.array(catalogModel).default(DEFAULT_MODELS)`，
+  `resolveModels()` 走 `(models ?? DEFAULT_MODELS).map(...)` —— **显式列表整体替换内置目录**。
+- 同一文件里 `const inputModalities = model.inputModalities ?? ["text"]` —— **省略即按纯文本**。
+
+而那个块里 `deepseek-flash` 只写了 `id` 与 `name`，没有 `inputModalities`，于是
+V4.1-Flash 的原生读图会被降级成纯文本路由 —— 恰恰是这次升级要拿到的能力。
+
+移除后由 0.1.5 内置目录接管：`deepseek-flash` 自带 `inputModalities: ["text","image"]`。
+顺带好处是不再手工维护一份会与上游漂移的副本（这次它已经漂了）。
+
+两层都已统一为 `deepseek-flash`：
+
+| 层 | 位置 | 说明 |
+| --- | --- | --- |
+| settings | `~/.dsh/settings.yaml` → `agent-default-model.model` | 热重载，优先生效 |
+| composition | `~/.dsh/profiles/web/cordis.yml` → `agent-default-model.config.model` | 组合 base；升级到 0.1.5 时该文件可能被重新生成 |
+
+改前备份：`/Volumes/S690/dsh-backups/20260911-122525-pre-model-switch/`。
+`cordis.yml` 仅改 1 行、总行数不变（579）。
+
 ## 覆盖层清单（已收敛为 4 个，构建链全绿）
 
 | 补丁 | 目标 | 与上游差异 |
