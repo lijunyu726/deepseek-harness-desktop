@@ -74,13 +74,11 @@ const OVERLAYS = [
     // use the native 0.1.5 file card instead of a desktop chip).
     markers: ['DESKTOP_VISION_BRIDGE_DISPLAY', 'data-dsh-edit-editor', 'promptTargetKey', 'revealPromptRow', 'olderRequestRef', 'parseFileCaption', 'FileAttachmentCard'],
   },
-  {
-    patch: 'conversation-client.js',
-    target: 'dsh-client-ui-conversation/lib/client.js',
-    // Composer side: draft attachment classification and prompt serialization
-    // for images, files, and folders.
-    markers: ['__DSH_SAVE_UPLOAD__', 'isImageFile', 'serializeImages'],
-  },
+  // NOTE: no conversation-client overlay. The desktop folder path no longer
+  // enters the composer attachment pipeline at all (0.1.5 rebuilt that pipeline
+  // around background upload receipts): the desktop bridge already copies the
+  // folder into the session directory, so the plugin appends the 📁 caption to
+  // the draft directly and the chat half renders it. See MIGRATION-0.1.5.md.
 ]
 
 function resolveTarget(overlay) {

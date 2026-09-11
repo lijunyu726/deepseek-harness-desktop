@@ -172,15 +172,29 @@ registry 类里补回这两个方法（对上游差异 56 行）：
 （复用类似 `__DSH_ADD_FILES__` 的桥接函数）。这样 composer 零改动，代价是草稿区
 不显示文件夹 chip（发送后才显示）。倾向这条。
 
-## 覆盖层清单（当前）
+## 覆盖层清单（已收敛为 4 个，构建链全绿）
 
-| 补丁 | 目标 | 状态 |
+| 补丁 | 目标 | 与上游差异 |
 | --- | --- | --- |
-| `agent-loop-index.js` | `dsh-agent-loop/lib/index.js` | ✅ |
-| `session-controller-index.js` | `dsh-api-session-controller/lib/index.js` | ✅ |
-| `workspace-index.js` | `dsh-workspace/lib/index.js` | ✅ |
-| `chat-client.js` | `dsh-client-ui-chat/lib/client.js` | 🟡 1/4 标记 |
-| `conversation-client.js` | `dsh-client-ui-conversation/lib/client.js` | ❌ |
+| `agent-loop-index.js` | `dsh-agent-loop/lib/index.js` | 17 行 |
+| `session-controller-index.js` | `dsh-api-session-controller/lib/index.js` | 31 行 |
+| `workspace-index.js` | `dsh-workspace/lib/index.js` | 60 行 |
+| `chat-client.js` | `dsh-client-ui-chat/lib/client.js` | 369 行 |
+
+**conversation-client 覆盖层已取消。** 0.1.5 重建了 composer 的附件管线（后台上传 +
+收据），桌面端的文件夹若要走进去需要新增描述符类型、改三处调用点。但文件夹根本
+不必成为附件：插件已经通过宿主 gateway 的 `copyFolderUpload` 把文件夹复制进会话
+目录并拿到 `path` / `shortPath` / `files` / `totalBytes`，只是目前把它包成一个带
+`__dshFolderPath` 的合成 `File` 再交给附件管线。
+
+**改为插件侧直接把 `📁 文件夹：<名> → <短路径>` 追加进 composer 草稿**
+（插件已持有 `inputActions.setDraft`）。composer 零改动，chat 侧的
+`parseFileCaption` 在发送后渲染成文件夹芯片。
+
+代价：文件夹在**草稿区**显示为文本而非芯片（发送后正常显示芯片）。
+
+**⚠️ 尚未实施**：这一改动在 `packages/dsh-desktop/lib/client.js`（约 :3413，
+现在是构造合成 File + `_deliverFiles`），属于插件适配轮次的工作。
 
 ## 构建链
 
