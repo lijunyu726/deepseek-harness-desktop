@@ -45,6 +45,9 @@ node_modules/          安装产物——绝不提交
 
 ## 关键实现约束（改代码前必读）
 
+- **量上游差异必须以「纯净 npm 包」为基准**：不要用 `node_modules/**.upstream-backup`——它未必是纯净上游（本项目曾出现备份比纯净版多 481 行的情况，会把真实改动量严重低估）。取基准的做法：`npm pack @deepseek-ai/<pkg>@<被替换的版本>` 解包后与新补丁 diff。
+- **`llm-deepseek.models` 是整体替换内置目录的**：设置文档里写这个分节会丢掉内置条目的一切未列出字段；**省略 `inputModalities` 即按 `["text"]` 处理**，会让默认的 `deepseek-flash` 丢掉 V4.1-Flash 的原生读图。要用该分节就必须把 `inputModalities`（以及 `imagePixelBudget` / `imageMaxBytes` / `systemPromptUpdate`）一并写全。
+- **`session.prompt` 的 codec 是 strict**：0.1.5 的 `content` 联合只接受 `text` / `image` / 带**必填** `receiptId` 的 `file`。桌面端自定义的文件元数据块不在其中，且 schema 由 typert 生成在宿主与客户端各一份（`typert.host.js`、`dsh-api-remotes/lib/client.js`），改它等于加两个大覆盖层。因此桌面端的文件/文件夹卡片改走**文本标题**（`📎 附件：…` / `📁 文件夹：…`），由 `parseFileCaption` 渲染——它产出的 `{kind, name, size, path}` 与原生 `normalizeFileBlock` 完全一致。普通文件则直接走 0.1.5 原生上传流程。
 - **上传增强 = 整文件补丁，不许改成字符串手术**：0.1.5 的增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 的**表驱动**清单覆盖（原文件留 `.upstream-backup`）。0.1.5 拆分了上游包，落点随之变化：apiproxy → `dsh-api-session-controller` + `dsh-workspace`；conversation → `dsh-client-ui-chat`（composer 侧不再需要补丁）。改动流程：改已装依赖文件 → 验证 → 同步回 `patches/` → `npm run upload:prepare` 再构建。`patches/superseded-0.1.1/` 是 0.1.1 版本的整文件，**只作参考**，套到 0.1.5 的包上会用旧实现覆盖新包。
 - **删除会话只有归档管理一个入口**：工作区/侧边栏会话行不提供「删除会话」（官方 rc.2 的 workspace 行菜单只有重命名/复制/归档；v1.4.2 的行内删除来自已废弃的 workspace-client 覆盖，已砍掉）。永久删除统一在「设置 → 归档管理」：`deleteSessions` remote → 逐会话停活体 agent（`live.cancel` + `whenIdle` + `scope.dispose`，每步有超时兜底）→ `workspaceRegistry.deleteSession(id)`（解绑记账 → 移出归档集 → 删日志 → 清索引，幂等）。**0.1.5 删除了 ApiProxy 与 registry 的 `deleteSession` / `unarchiveSession`，这两个方法由 `patches/workspace-index.js` 补回**；不得改回依赖 ApiProxy。支持单选（行内二次确认）与多选批量（顶部批量条确认）。不得为恢复行内删除重新引入 workspace-client 覆盖。
 - **file 块协议约束**：消息 wire 的 `file` 块只带元数据与路径，**不带字节**（字节存会话目录）；`desktopFileContent` 必须为每个 file 块附加 text 说明，且不得把 file 块当 image（`isImageFile` 双校验 MIME+扩展名）。文件卡片渲染依赖 durable content 里的 file 块，删除会话递归清理 `uploads/` 是预期行为。
