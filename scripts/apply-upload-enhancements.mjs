@@ -1,22 +1,26 @@
 /**
- * Apply the desktop upload enhancements to the installed upstream packages.
+ * Apply the desktop enhancement overlays to the installed upstream packages.
  *
- * The three upstream packages (dsh-client-ui-conversation,
- * dsh-host-apiproxy and dsh-agent-loop) are NOT built here — they arrive as
- * npm dependencies. This repository ships the enhanced full files under
- * patches/ and this script overlays them onto the repo's node_modules before
- * electron-builder packages them (same reproducible-patch pattern as
- * apply-vision-bridge.mjs, but full-file overlays because the enhancement
- * set is too large for fragile string surgery).
+ * The upstream packages are NOT built here — they arrive as npm dependencies.
+ * This repository ships the enhanced full files under `patches/` and this
+ * script overlays them onto the repo's node_modules before electron-builder
+ * packages them. Full-file overlays (not string surgery) because the
+ * enhancement set is too large for fragile in-place edits, and because a
+ * `.upstream-backup` next to each target makes the applied delta auditable.
  *
- * Overlays (idempotent; originals kept as <file>.upstream-backup):
- *   patches/conversation-client.js  → dsh-client-ui-conversation/lib/client.js
- *   patches/apiproxy-index.js       → dsh-host-apiproxy/lib/index.js
- *   patches/agent-loop-index.js     → dsh-agent-loop/lib/index.js
+ * The 0.1.5 line split what the 0.1.1 line kept in one package, so one 0.1.1
+ * overlay can now belong to several targets:
  *
- * The rc.2 workspace and web-frontend bundles are deliberately left native:
- * their attachment slots and archive lifecycle replaced the rc.6 surfaces
- * that the former desktop overlays targeted.
+ *   0.1.1 target                          →  0.1.5 target(s)
+ *   dsh-host-apiproxy/lib/index.js        →  dsh-api-session-controller/lib/index.js
+ *                                            dsh-api-workspace-controller/lib/index.js
+ *   dsh-client-ui-conversation/lib/client.js → dsh-client-ui-chat/lib/client.js
+ *                                              dsh-client-ui-conversation/lib/client.js
+ *   dsh-agent-loop/lib/index.js           →  dsh-agent-loop/lib/index.js   (unchanged)
+ *
+ * Every overlay is idempotent and keeps the upstream original as
+ * `<file>.upstream-backup`. A bundle with a syntax error would ship a broken
+ * DMG, so each overlay is syntax-checked before it is accepted.
  */
 
 import { copyFileSync, existsSync, readFileSync } from 'node:fs'
@@ -32,35 +36,77 @@ const nm = path.join(root, 'node_modules', '@deepseek-ai')
 const args = process.argv.slice(2)
 const checkOnly = args.includes('--check')
 
-const CONVERSATION_TARGET = path.join(nm, 'dsh-client-ui-conversation', 'lib', 'client.js')
-const APIPROXY_TARGET = path.join(nm, 'dsh-host-apiproxy', 'lib', 'index.js')
-const AGENT_LOOP_TARGET = path.join(nm, 'dsh-agent-loop', 'lib', 'index.js')
+/**
+ * One overlay: a file under patches/ replacing one installed upstream file.
+ * `markers` are the strings that must exist in the applied result — they are
+ * what proving the overlay actually landed means, and they catch an upstream
+ * rewrite that silently dropped the seat the enhancement was written against.
+ */
+const OVERLAYS = [
+  {
+    patch: 'agent-loop-index.js',
+    target: 'dsh-agent-loop/lib/index.js',
+    // Strips delegated image blocks at the request boundary for text-only models.
+    markers: ['stripDelegatedImages', 'DESKTOP_VISION_BRIDGE_TEXT'],
+  },
+  {
+    patch: 'session-controller-index.js',
+    target: 'dsh-api-session-controller/lib/index.js',
+    // Prompt admission: file-block schema, desktopFileContent, vision delegation,
+    // plus the timeout-bounded permanent session deletion teardown.
+    markers: ['desktopFileContent', 'desktopVisionMcpContent', 'decodeBase64', 'teardownSessionForDelete'],
+  },
+  {
+    patch: 'workspace-controller-index.js',
+    target: 'dsh-api-workspace-controller/lib/index.js',
+    // Workspace deletion cascades to each of its sessions before it unregisters.
+    markers: ['teardownSessionForDelete'],
+  },
+  {
+    patch: 'chat-client.js',
+    target: 'dsh-client-ui-chat/lib/client.js',
+    // Transcript rendering: file chips, vision-bridge text suppression, the
+    // in-place edit editor, and the history-rail prompt navigation.
+    markers: ['DESKTOP_VISION_BRIDGE_DISPLAY', 'normalizeFileBlock', 'data-dsh-edit-editor', 'promptTargetKey'],
+  },
+  {
+    patch: 'conversation-client.js',
+    target: 'dsh-client-ui-conversation/lib/client.js',
+    // Composer side: draft attachment classification and prompt serialization
+    // for images, files, and folders.
+    markers: ['__DSH_SAVE_UPLOAD__', 'isImageFile', 'serializeImages'],
+  },
+]
+
+function resolveTarget(overlay) {
+  return path.join(nm, ...overlay.target.split('/'))
+}
 
 /** Overlay one file, keeping the upstream original as <file>.upstream-backup. */
-function overlay(patchFile, target) {
+function overlay(entry) {
+  const patchFile = path.join(patchesDir, entry.patch)
+  const target = resolveTarget(entry)
   if (!existsSync(patchFile)) throw new Error(`missing patch file: ${patchFile}`)
   if (!existsSync(target)) throw new Error(`target missing (upstream version drift?): ${target}`)
   const backup = `${target}.upstream-backup`
   if (!existsSync(backup)) copyFileSync(target, backup)
   copyFileSync(patchFile, target)
-  // A bundle with a syntax error ships a broken DMG: refuse.
   execFileSync(process.execPath, ['--check', target], { stdio: 'inherit' })
-  console.log(`[upload-apply] ${path.relative(root, target)}`)
-}
-
-const MARKERS = {
-  [CONVERSATION_TARGET]: ['__DSH_SAVE_UPLOAD__', 'dsh-desktop:navigate-prompt', 'data-dsh-edit-editor', 'DESKTOP_VISION_BRIDGE_DISPLAY'],
-  [APIPROXY_TARGET]: ['desktopFileContent', 'admitEncodedImages', 'desktopVisionMcpContent', 'decodeBase64'],
-  [AGENT_LOOP_TARGET]: ['stripDelegatedImages'],
+  console.log(`[upload-apply] ${entry.patch} → ${entry.target}`)
 }
 
 function check() {
   let ok = true
-  for (const [target, markers] of Object.entries(MARKERS)) {
+  for (const entry of OVERLAYS) {
+    const target = resolveTarget(entry)
     const source = existsSync(target) ? readFileSync(target, 'utf8') : ''
-    const applied = markers.every((marker) => source.includes(marker))
-    console.log(`[upload-check] ${applied ? 'OK' : 'MISSING'} ${path.relative(root, target)}`)
-    if (!applied) ok = false
+    const missing = entry.markers.filter((marker) => !source.includes(marker))
+    const applied = missing.length === 0
+    console.log(`[upload-check] ${applied ? 'OK     ' : 'MISSING'} ${entry.target}`)
+    if (!applied) {
+      for (const marker of missing) console.log(`               missing marker: ${marker}`)
+      ok = false
+    }
   }
   if (!ok) throw new Error('upload enhancements not fully applied — run `npm run upload:prepare`')
 }
@@ -68,8 +114,6 @@ function check() {
 if (checkOnly) {
   check()
 } else {
-  overlay(path.join(patchesDir, 'conversation-client.js'), CONVERSATION_TARGET)
-  overlay(path.join(patchesDir, 'apiproxy-index.js'), APIPROXY_TARGET)
-  overlay(path.join(patchesDir, 'agent-loop-index.js'), AGENT_LOOP_TARGET)
+  for (const entry of OVERLAYS) overlay(entry)
   check()
 }
