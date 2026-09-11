@@ -2085,7 +2085,7 @@ window.__ModuleLoader__.load({
       return String(name ?? '').replace(/^DeepSeek-V(\d)(\d+)-/, 'DeepSeek-V$1.$2-')
     }
 
-    function ModelRheostat({ sessionId, locked, connection }) {
+    function ModelRheostat({ sessionId, locked, connection, remote }) {
       const [groups, setGroups] = react.useState(null)
       const [current, setCurrent] = react.useState(null)
       const [busy, setBusy] = react.useState(false)
@@ -2193,9 +2193,10 @@ window.__ModuleLoader__.load({
         // `groups` empty, so the track had no stops and the rheostat degraded
         // to a bare chip.
         const load = () => {
-          connection.api.sessions.modelCatalog({}).then((r) => {
-            if (!r || !r.result || !r.result.ok) return
-            const value = r.result.value
+          if (remote === undefined || remote === null) return
+          remote.session.modelCatalog().then((r) => {
+            if (!r || r.ok !== true) return
+            const value = r.value
             setGroups(value.groups ?? [])
             setCurrent(value.default ?? null)
           }).catch(() => {})
@@ -2249,14 +2250,14 @@ window.__ModuleLoader__.load({
         const stop = stops[idx]
         if (stop === undefined || busy || stops.length === 0) return
         setBusy(true)
-        connection.api.sessions.selectModel({
+        remote.session.selectModel({
           sessionId,
           provider: stop.provider,
           model: stop.model,
           reasoningEffort: stop.effort,
         }).then((r) => {
           setBusy(false)
-          if (r && r.result && r.result.ok) setCurrent(r.result.value.selected ?? null)
+          if (r && r.ok === true) setCurrent(r.value.selected ?? null)
         }).catch(() => setBusy(false))
       }, [stops, busy, sessionId, connection])
 
@@ -2273,15 +2274,15 @@ window.__ModuleLoader__.load({
         }
         const effort = model.reasoning?.defaultEffort ?? model.reasoning?.efforts?.[0]?.id
         setBusy(true)
-        connection.api.sessions.selectModel({
+        remote.session.selectModel({
           sessionId,
           provider,
           model: modelId,
           ...(effort === undefined ? {} : { reasoningEffort: effort }),
         }).then((r) => {
           setBusy(false)
-          if (r && r.result && r.result.ok) {
-            setCurrent(r.result.value.selected ?? null)
+          if (r && r.ok === true) {
+            setCurrent(r.value.selected ?? null)
             setSupplier(provider)
             setPane(null)
           }
@@ -2295,19 +2296,19 @@ window.__ModuleLoader__.load({
           return
         }
         setBusy(true)
-        connection.api.sessions.selectModel({
+        remote.session.selectModel({
           sessionId,
           provider: current.provider,
           model: current.model,
           reasoningEffort: effortId,
         }).then((r) => {
           setBusy(false)
-          if (r && r.result && r.result.ok) {
-            setCurrent(r.result.value.selected ?? null)
+          if (r && r.ok === true) {
+            setCurrent(r.value.selected ?? null)
             setPane(null)
           }
         }).catch(() => setBusy(false))
-      }, [current, busy, sessionId, connection])
+      }, [current, busy, sessionId, remote])
 
       const stopFromEvent = (clientX) => {
         const el = trackRef.current
@@ -2793,10 +2794,15 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const inject = ['slots', 'connection']
+    const inject = ['slots', 'connection', 'remote', 'remote.session']
 
     function apply(ctx) {
       const connection = ctx.get('connection')
+      // 0.1.5 dropped `connection.api`; the session-controller methods now hang
+      // off the `remote` service (`remote.session.modelCatalog()` /
+      // `selectModel()`), which also answers with a bare {ok, value} envelope
+      // instead of the old {result: {ok, value}} wrapper.
+      const remote = ctx.remote
       // Widen the settings panel so wide surfaces (365-day heatmap, tables)
       // fit without scrollbars. Overrides the shell's 800px default.
       let panelStyle = document.getElementById('dsh-desktop-ui-overrides')
@@ -3310,7 +3316,7 @@ window.__ModuleLoader__.load({
             // single-seat election renders the LOWEST priority; the shell
             // occupies priority 0, so go below it to take the seat.
             priority: -10,
-            inject: () => ({ connection, gateway }),
+            inject: () => ({ connection, gateway, remote }),
           },
           ModelRheostat,
         ),
