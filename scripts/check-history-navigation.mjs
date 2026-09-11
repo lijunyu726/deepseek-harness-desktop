@@ -70,9 +70,13 @@ function validate(label, conversation, pluginClient, pluginHost) {
       && conversation.includes('if (el.scrollHeight <= el.clientHeight + 1) loadOlderAnchored();'),
     `${label}: older pages are not loaded automatically at the top or in a short viewport`,
   )
+  // 0.1.5's loadOlder() returns no promise, so the guard cannot settle off the
+  // call itself: it is held from initiation and released only when the store
+  // reports paging finished.
   assert(
-    conversation.includes('loadOlder: () => scoped.loadOlder()'),
-    `${label}: older-page promise is not returned to the single-flight loader`,
+    conversation.includes('olderRequestRef.current = true;')
+      && conversation.includes('if (!loadingOlder) olderRequestRef.current = false;'),
+    `${label}: the single-flight older-page guard is not held until paging settles`,
   )
   assert(
     !conversation.includes('onClick: loadOlderAnchored'),
@@ -81,14 +85,14 @@ function validate(label, conversation, pluginClient, pluginHost) {
   console.log(`[history-navigation-check] OK ${label}`)
 }
 
-const sourceConversation = read(path.join(root, 'patches', 'conversation-client.js'))
+const sourceConversation = read(path.join(root, 'patches', 'chat-client.js'))
 const sourcePluginClient = read(path.join(root, 'packages', 'dsh-desktop', 'lib', 'client.js'))
 const sourcePluginHost = read(path.join(root, 'packages', 'dsh-desktop', 'lib', 'index.js'))
 validate('sources', sourceConversation, sourcePluginClient, sourcePluginHost)
 
 if (args.includes('--installed')) {
   const scope = path.join(root, 'node_modules', '@deepseek-ai')
-  const installedConversation = read(path.join(scope, 'dsh-client-ui-conversation', 'lib', 'client.js'))
+  const installedConversation = read(path.join(scope, 'dsh-client-ui-chat', 'lib', 'client.js'))
   const installedPluginClient = read(path.join(scope, 'dsh-desktop', 'lib', 'client.js'))
   const installedPluginHost = read(path.join(scope, 'dsh-desktop', 'lib', 'index.js'))
   assert(canonicalBuildPaths(installedConversation) === canonicalBuildPaths(sourceConversation), 'installed conversation bundle differs from source patch')
@@ -102,7 +106,7 @@ if (appFlag >= 0) {
   const appDir = args[appFlag + 1]
   if (!appDir) fail('--app requires a .app directory path')
   const scope = path.join(path.resolve(appDir), 'Contents', 'Resources', 'app', 'node_modules', '@deepseek-ai')
-  const appConversation = read(path.join(scope, 'dsh-client-ui-conversation', 'lib', 'client.js'))
+  const appConversation = read(path.join(scope, 'dsh-client-ui-chat', 'lib', 'client.js'))
   const appPluginClient = read(path.join(scope, 'dsh-desktop', 'lib', 'client.js'))
   const appPluginHost = read(path.join(scope, 'dsh-desktop', 'lib', 'index.js'))
   assert(canonicalBuildPaths(appConversation) === canonicalBuildPaths(sourceConversation), 'packaged conversation bundle differs from source patch')

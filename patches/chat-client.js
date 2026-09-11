@@ -2750,13 +2750,16 @@ window.__ModuleLoader__.load({
 						top: flowTop(row, el)
 					};
 				}
+				// 0.1.5's loadOlder() is fire-and-forget (`session.loadOlder()` with no
+				// returned promise), so settling the guard off the call itself would
+				// clear it in the same tick and the flag would never hold. Hold it
+				// until the store reports paging finished instead.
 				olderRequestRef.current = true;
 				try {
-					Promise.resolve(loadOlder()).catch(() => {}).finally(() => {
-						olderRequestRef.current = false;
-					});
+					loadOlder();
 				} catch {
 					olderRequestRef.current = false;
+					return false;
 				}
 				return true;
 			};
@@ -2784,6 +2787,9 @@ window.__ModuleLoader__.load({
 				loadOlderAnchored();
 			};
 			tryPromptNavigationRef.current = tryPromptNavigation;
+			(0, react.useEffect)(() => {
+				if (!loadingOlder) olderRequestRef.current = false;
+			}, [loadingOlder]);
 			(0, react.useEffect)(() => {
 				const onNavigatePrompt = (event) => {
 					const target = event instanceof CustomEvent ? event.detail : null;
