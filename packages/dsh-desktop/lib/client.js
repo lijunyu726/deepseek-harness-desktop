@@ -3364,22 +3364,22 @@ window.__ModuleLoader__.load({
               _uploadToast('该文件夹没有可上传的文件')
               return
             }
-            const folderFile = new File([''], result.name || 'folder', { type: 'application/x-directory' })
-            try {
-              Object.defineProperty(folderFile, '__dshFolderPath', { value: result.path, writable: false })
-              Object.defineProperty(folderFile, '__dshFolderShortPath', { value: result.shortPath ?? result.path, writable: false })
-              Object.defineProperty(folderFile, '__dshFolderStats', { value: { files: result.files ?? 0, totalBytes: result.totalBytes ?? 0 }, writable: false })
-            } catch {
-              /* properties already set: placeholder unusable */
-            }
-            if (!_deliverFiles([folderFile])) {
-              let attempts = 0
-              const timer = setInterval(() => {
-                attempts += 1
-                if (_deliverFiles([folderFile]) || attempts > 20) clearInterval(timer)
-              }, 250)
-            } else if (result.truncated) {
-              _uploadToast('文件夹较大，仅复制了部分内容（上限 2000 个文件 / 总计 200MB）')
+            // The host gateway already copied the folder into the session directory, so it
+            // never enters the composer's attachment pipeline: 0.1.5 rebuilt that
+            // around background upload receipts and has no lane for a directory.
+            // Appending the caption as text is what the chat half renders into a
+            // folder chip (parseFileCaption) once the message is sent.
+            const caption = `📁 文件夹：${result.name || 'folder'} → ${result.shortPath || result.path}`
+            const inputActions = window.__dshInputActions
+            const state = inputActions?.state?.getSnapshot?.()
+            const current = typeof state?.draft === 'string' ? state.draft : ''
+            if (inputActions && typeof inputActions.setDraft === 'function') {
+              inputActions.setDraft(current === '' ? caption : `${current}\n${caption}`)
+              if (result.truncated) {
+                _uploadToast('文件夹较大，仅复制了部分内容（上限 2000 个文件 / 总计 200MB）')
+              }
+            } else {
+              _uploadToast(`文件夹已复制到 ${result.path}，但输入框未就绪，请重试`)
             }
           } catch (err) {
             _uploadToast(`文件夹上传失败：${String(err?.message ?? err)}`)
