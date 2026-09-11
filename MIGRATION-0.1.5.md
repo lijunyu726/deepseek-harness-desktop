@@ -94,3 +94,50 @@ z.object({ "type": z.literal("file"), "receiptId": z.string() })   // 必填
 补丁应用是**表驱动 + 全量预检**的：任一补丁缺失即拒绝启动，避免半途失败留下
 「部分已 patch」的假成功。`patches/superseded-0.1.1/` 存放 0.1.1 版本的整文件，
 **不参与应用**——它们若被套到 0.1.5 的包上会用旧实现覆盖新包。
+
+## 发现：0.1.5 原生的文件卡片可能与桌面端的文件芯片重叠
+
+`dsh-client-ui-chat` 的 `UserStyleBubble` 已经原生渲染 durable 文件附件卡片
+（`MessageItem_module_css_default.fileCard` + `FileTypeIcon` + `fileExtension` +
+`fileSizeText`），数据来自 0.1.5 官方的 `fileUploads` 收据流：
+
+客户端上传 → `receiptId` → 宿主 `ctx.fileUploads.resolve()` → durable
+`FileAttachmentRef` → 气泡上渲染成卡片，模型按引用读取。
+
+桌面端 `FileAttachmentCard` 覆盖的能力与它的差异：
+
+| 能力 | 0.1.5 原生 | 桌面端芯片 |
+| --- | --- | --- |
+| 文件卡片（图标/名/扩展名/大小） | ✅ | ✅ |
+| macOS 真实文件图标（`app.getFileIcon` 桥） | ❌（按扩展名给图标） | ✅ |
+| 文件夹上传 | ❓ 待确认 | ✅ |
+| 点击显示完整路径 | ❌ | ✅ |
+
+**因此 chat 补丁里的文件芯片部分（11–14 共 4 处、约 200 行）可能不需要移植**，
+改为让桌面端走官方 `fileUploads` 流程即可。这会把 conversation/chat 两个补丁的
+文件相关改动整体消掉，代价是失去 macOS 真实图标、文件夹上传与路径显示。
+
+这个取舍需要用户拍板；`patches/superseded-0.1.1/conversation-client.js` 保留了
+原实现，若要保留随时可以移植。
+
+## chat 补丁（11 处）逐处说明
+
+| # | 行数 | 内容 | 0.1.5 处理建议 |
+| --- | --- | --- | --- |
+| 11 | +164 | `contentParts` 增加 `files` 收集 + `FileAttachmentCard`/`fileEmoji`/`normalizeFileBlock`/`parseFileCaption`/`DESKTOP_VISION_BRIDGE_DISPLAY` | 文件芯片部分视上面取舍；`DESKTOP_VISION_BRIDGE_DISPLAY` **必须移植**（隐藏桥接文本） |
+| 12 | +1 | 解构出 `files` | 随 11（注意 0.1.5 返回的是 `attachments` 不是 `images`） |
+| 13 | +4 | 渲染文件卡片列表 | 随 11 |
+| 14 | +2/−2 | 缩进连带调整 | 随 13 |
+| 15 | +126 | `UserMessageNodeView` 原位编辑（`useDshEditStore` + `__dshEditStore`） | 必须移植 |
+| 16 | +29 | `promptTargetKey` 时间轴定位 | 必须移植（锚点已重构，需定位） |
+| 17 | +5 | `olderRequestRef`/`promptNavigationRef` 等 refs | 必须移植 |
+| 18 | +1 | 滚到顶部 48px 内自动 `loadOlderAnchored()` | 必须移植 |
+| 19 | +1/−1 | 用 guard 取代分页按钮的 ref-null 断言 | 必须移植 |
+| 20 | +60 | 历史时间轴导航与自动逐页加载 | 必须移植 |
+| 21 | +0/−9 | 移除「加载更早」按钮 | 必须移植 |
+| 22 | +1 | 投影里带上 `messageId`（时间轴精确定位用） | 必须移植 |
+
+0.1.5 的 `contentParts` 签名已变：返回 `{ text, attachments, rest }`，其中
+`attachments` 同时承载 image 与 file 附件；原补丁的 `images` 字段已不存在。
+解构锚点也从 `const { text, images, rest }` 变为
+`const { text, attachments: contentAttachments, rest }`（`client.js:1234`）。
