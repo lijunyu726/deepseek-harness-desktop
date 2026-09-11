@@ -3305,39 +3305,28 @@ window.__ModuleLoader__.load({
       // --- File / folder upload: inject into the "+" command menu ---
       // The command menu has class _3e4SsG_menu (from dsh-client-ui-input-trigger).
       // Watch for it to appear and inject upload items at the top of its viewport.
-      const _fileInput = document.createElement('input')
-      _fileInput.type = 'file'
-      _fileInput.multiple = true
-      _fileInput.style.display = 'none'
-      document.body.appendChild(_fileInput)
+      // Uploading a regular FILE is left entirely to the runtime: 0.1.5
+      // rebuilt the composer attachment pipeline around background uploads and
+      // receipts, so a plugin that reads the browser bytes itself would be a
+      // second, drifting implementation. The native attach button already owns
+      // a hidden <input type=file multiple>; clicking it reuses that pipeline,
+      // including its progress, cancellation, and cross-session visibility.
+      // Only folders need desktop help — the native picker has no directory
+      // entry point at all (see MIGRATION-0.1.5.md).
+      const NATIVE_ATTACH_SELECTOR = 'button[aria-label="添加附件"], button[aria-label="Add attachment"]'
 
-      function _deliverFiles(files) {
-        if (typeof window.__DSH_ADD_FILES__ === 'function') {
-          window.__DSH_ADD_FILES__(files)
-          return true
+      function _openNativeAttach() {
+        const button = document.querySelector(NATIVE_ATTACH_SELECTOR)
+        if (button === null) {
+          _uploadToast('附件按钮尚未就绪，请稍后重试')
+          return false
         }
-        return false
-      }
-
-      function _triggerFileInput(input) {
-        input.onchange = () => {
-          if (!input.files || input.files.length === 0) return
-          const files = Array.from(input.files)
-          if (_deliverFiles(files)) {
-            input.value = ''
-            return
-          }
-          // The composer may still be mounting: retry for up to ~5s.
-          let attempts = 0
-          const timer = setInterval(() => {
-            attempts += 1
-            if (_deliverFiles(files) || attempts > 20) {
-              clearInterval(timer)
-              input.value = ''
-            }
-          }, 250)
+        if (button.disabled === true) {
+          _uploadToast('当前无法添加附件（会话忙碌或已锁定）')
+          return false
         }
-        input.click()
+        button.click()
+        return true
       }
 
       // Folder upload: Electron main-process native dialog (no TCC
@@ -3444,7 +3433,7 @@ window.__ModuleLoader__.load({
           })
           return btn
         }
-        menu.appendChild(makeItem('上传文件', _UPLOAD_FILE_ICON, () => _triggerFileInput(_fileInput)))
+        menu.appendChild(makeItem('上传文件', _UPLOAD_FILE_ICON, () => _openNativeAttach()))
         menu.appendChild(makeItem('上传文件夹', _UPLOAD_FOLDER_ICON, () => _triggerFolderUpload()))
         document.body.appendChild(menu)
         _uploadMenuEl = menu

@@ -207,9 +207,8 @@ V4.1-Flash 的原生读图会被降级成纯文本路由 —— 恰恰是这次�
 | 位置 | 现状 | 需要改成 |
 | --- | --- | --- |
 | `client.js` 文件夹流程 | ✅ 已改为把 `📁 文件夹：<名> → <短路径>` 追加进草稿 | 完成 |
-| `_deliverFiles()` (约 :3314) | 调用 `window.__DSH_ADD_FILES__`，0.1.5 里**恒为 false** | 普通文件应交给 0.1.5 原生流程：直接触发原生文件输入，而不是自己接管 |
-| `_triggerFileInput()` (约 :3321) | 依赖 `_deliverFiles` | 同上 |
-| 「+」菜单 | 依赖 `window.__DSH_OPEN_UPLOAD_MENU__` | 改为点击原生文件输入 / 原生上传入口 |
+| `_deliverFiles()` / `_triggerFileInput()` / 自建 `_fileInput` | ✅ 已删除 | 改为 `_openNativeAttach()`：点击原生附件按钮 `button[aria-label="添加附件"]`（英文 `Add attachment`），复用其隐藏的 `<input type=file multiple>` |
+| 「+」菜单「上传文件」 | ✅ 已改接 `_openNativeAttach()` | 完成 |
 
 **判据**：0.1.5 的普通文件必须走后台上传 + 收据（`fileUploads`），桌面端不要自己
 读取浏览器字节——那条路已被上游重建，自己接管等于与上游重复且必然漂移。
