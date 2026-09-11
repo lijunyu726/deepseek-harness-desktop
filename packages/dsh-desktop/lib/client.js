@@ -2186,12 +2186,18 @@ window.__ModuleLoader__.load({
       }, [groups, current])
 
       react.useEffect(() => {
+        // 0.1.5 replaced `llm.models` + `sessions.models` with a single
+        // `sessions.modelCatalog`, which returns the catalog (`groups`) and the
+        // selection to fall back on (`default: {provider, model,
+        // reasoningEffort}`) in one call. Calling the removed methods left
+        // `groups` empty, so the track had no stops and the rheostat degraded
+        // to a bare chip.
         const load = () => {
-          connection.api.llm.models({}).then((r) => {
-            if (r && r.result && r.result.ok) setGroups(r.result.value.groups ?? [])
-          }).catch(() => {})
-          connection.api.sessions.models({ sessionId }).then((r) => {
-            if (r && r.result && r.result.ok) setCurrent(r.result.value.current ?? null)
+          connection.api.sessions.modelCatalog({}).then((r) => {
+            if (!r || !r.result || !r.result.ok) return
+            const value = r.result.value
+            setGroups(value.groups ?? [])
+            setCurrent(value.default ?? null)
           }).catch(() => {})
         }
         load()
