@@ -2085,7 +2085,7 @@ window.__ModuleLoader__.load({
       return String(name ?? '').replace(/^DeepSeek-V(\d)(\d+)-/, 'DeepSeek-V$1.$2-')
     }
 
-    function ModelRheostat({ sessionId, locked, connection, remote }) {
+    function ModelRheostat({ sessionId, locked, connection, remote, inputActions }) {
       const [groups, setGroups] = react.useState(null)
       const [current, setCurrent] = react.useState(null)
       const [busy, setBusy] = react.useState(false)
@@ -2353,6 +2353,36 @@ window.__ModuleLoader__.load({
         draggingRef.current = false
         setDragging(false)
       }
+
+      // The draft API has to be reachable from the folder-upload flow, and it
+
+      // must come from a component that actually mounts. The prompt rail was the
+
+      // original home for this bridge, but it renders nothing in several ordinary
+
+      // states, so `window.__dshInputActions` stayed undefined and folder upload
+
+      // could not write into the composer. The rheostat's seat is model seating
+
+      // inside the same session-scoped composer, so it is present whenever a
+
+      // session is; taking inputActions from its standard props is the reliable
+
+      // source. The rail still publishes the same global as a fallback.
+
+      (0, react.useEffect)(() => {
+
+        if (inputActions === undefined || inputActions === null) return;
+
+        window.__dshInputActions = inputActions;
+
+        return () => {
+
+          if (window.__dshInputActions === inputActions) window.__dshInputActions = null;
+
+        };
+
+      }, [inputActions]);
 
       const noStops = stops.length === 0
       if (noStops && current === null) return null
