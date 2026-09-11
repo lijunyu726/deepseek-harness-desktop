@@ -52,9 +52,10 @@ const OVERLAYS = [
   {
     patch: 'session-controller-index.js',
     target: 'dsh-api-session-controller/lib/index.js',
-    // Prompt admission: file-block schema, desktopFileContent, vision delegation,
-    // plus the timeout-bounded permanent session deletion teardown.
-    markers: ['desktopFileContent', 'desktopVisionMcpContent', 'decodeBase64', 'teardownSessionForDelete'],
+    // Prompt admission: desktop metadata file blocks bypass the official
+    // receipt path, and text-only models delegate their images to the vision
+    // MCP through the attachment seam's imageHostPath.
+    markers: ['desktopFileContent', 'desktopVisionMcpContent', 'isDesktopMetadataFile', 'imageHostPath'],
   },
   {
     patch: 'workspace-controller-index.js',
@@ -114,6 +115,16 @@ function check() {
 if (checkOnly) {
   check()
 } else {
+  // Refuse to start unless every overlay can actually be applied: a run that
+  // dies halfway leaves node_modules carrying some overlays and not others,
+  // which reads as success to the next `upload:check`.
+  const missing = OVERLAYS
+    .map((entry) => ({ entry, patchFile: path.join(patchesDir, entry.patch) }))
+    .filter(({ patchFile }) => !existsSync(patchFile))
+  if (missing.length > 0) {
+    for (const { entry, patchFile } of missing) console.error(`[upload-apply] not yet ported: ${path.relative(root, patchFile)} (targets ${entry.target})`)
+    throw new Error(`${missing.length} overlay(s) missing — port them before packaging`)
+  }
   for (const entry of OVERLAYS) overlay(entry)
   check()
 }
