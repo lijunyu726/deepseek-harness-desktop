@@ -151,7 +151,13 @@ function INDEX_BOOT_HELPER(html) {
     '  function enforceLayout() {',
     '    var frame = document.querySelector(".pI_x6G_frame");',
     '    if (frame) frame.style.setProperty("grid-template-columns", "0px minmax(0, 1fr) 0px", "important");',
-    '    var details = document.querySelector(".pI_x6G_detailsCol");',
+    // 0.1.5 replaced the Detail panel with the right Sidebar: the third layout
+    // column is now `.pI_x6G_rightbarCol` and `.pI_x6G_detailsCol` no longer
+    // exists upstream, so the old rule was a silent no-op. The frame's
+    // grid-template-columns below already collapses that column to 0px; hiding
+    // the current class as well keeps the phone layout correct even if a future
+    // build stops collapsing it.
+    '    var details = document.querySelector(".pI_x6G_rightbarCol") || document.querySelector(".pI_x6G_detailsCol");',
     '    if (details) details.style.setProperty("display", "none", "important");',
     '    var handle = document.querySelector(".pI_x6G_handle");',
     '    if (handle) handle.style.setProperty("display", "none", "important");',
