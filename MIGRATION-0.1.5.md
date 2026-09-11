@@ -78,66 +78,53 @@ z.object({ "type": z.literal("file"), "receiptId": z.string() })   // 必填
 两者可互换，芯片渲染无差别，且 `parseFileCaption` 的注释本就写着它是给旧消息用的
 回退路径。代价仅是 durable 会话日志里文件从结构块变成文本。
 
-## 尚未解决
+## 永久删除 / 取消归档：已在插件侧闭环
 
-**永久删除会话/工作区的 API 已重构**，桌面端「设置 → 归档管理」彻底删除功能依赖的
-链路需要重新设计：
+0.1.5 把这两个能力**从上游 API 里整个拿掉了**，两条路径都断：
 
-- `dsh-host-apiproxy` 的 `workspace.deleteSession` 已不存在
-- 会话删除不在 `dsh-api-session-controller` 的 commands 里
-- `dsh-workspace` 接缝不再暴露 `deleteSession`
-- `deleteSession` 目前只出现在 `dsh-session-query-sqlite`（内部索引维护，非公开 API）
-  和本项目插件自身
+- RPC 层（实测 `dsh-api-remotes` 的注册表）：会话侧只有 attachment / cancel /
+  control / create / follow / fork / list / modelCatalog / openWorkspacePath /
+  page / prompt / rename / search / selectModel / updateQueue —— **没有 `session/delete`**；
+  工作区侧只有 `workspace/archiveSession`、`workspace/delete` 等。
+- 接缝层：`dsh-workspace` 的 registry 只有 `archiveSession()`，**没有
+  `unarchiveSession()`，也没有 `deleteSession()`**；`dsh-session-persistence`
+  只给 append/close/flush/read。
+
+而桌面端两条路径都依赖它们：`packages/dsh-desktop/lib/index.js` 的
+`deleteSessions()` 走 ApiProxy（0.1.5 里该包已删除），回退分支调用
+`registry.deleteSession(id)`；`unarchiveSession()` 调用 `registry.unarchiveSession(id)`。
+
+**处置：新增 `patches/workspace-index.js`**，在 `dsh-workspace/lib/index.js` 的
+registry 类里补回这两个方法（对上游差异 56 行）：
+
+- `unarchiveSession(id)`：从 `archivedSessionIds` 里移除该 id（幂等）。
+- `deleteSession(id)`：解绑工作区记账 → 移出归档集 → 按 `sessionPaths` 记录的路径
+  删除会话日志 → 清理 `sessionPaths` 与 `headers` 索引（幂等，文件已不存在也 resolve）。
+  另需把 `rm` 加进 `node:fs/promises` 的 import。
+
+因此 `api-workspace-controller` 覆盖层**不再需要**——功能回到了本项目自己的插件里。
+
+### 待运行期验证
+
+插件回退分支还调用 `agents.remove?.(id)` 与 `sessions.remove?.(id)`（都是可选链）。
+实测 0.1.5 的 `dsh-agent` 服务方法表里 **`remove(messageId)` 是删除收件箱消息**，
+不是注销 agent；`dsh-session` 也没有 `remove`。两者会静默空转，被删会话是否
+「幽灵」回侧边栏（插件注释里描述的 0.1.1 症状）需要在冒烟测试里实测。
+若确实残留，可行方向是让 `deleteSession()` 一并从 header 索引与 `session/list`
+的枚举源里剔除（`session/list` 的枚举来源需再确认）。
+
+## 覆盖层清单（当前）
+
+| 补丁 | 目标 | 状态 |
+| --- | --- | --- |
+| `agent-loop-index.js` | `dsh-agent-loop/lib/index.js` | ✅ |
+| `session-controller-index.js` | `dsh-api-session-controller/lib/index.js` | ✅ |
+| `workspace-index.js` | `dsh-workspace/lib/index.js` | ✅ |
+| `chat-client.js` | `dsh-client-ui-chat/lib/client.js` | 🟡 1/4 标记 |
+| `conversation-client.js` | `dsh-client-ui-conversation/lib/client.js` | ❌ |
 
 ## 构建链
 
 补丁应用是**表驱动 + 全量预检**的：任一补丁缺失即拒绝启动，避免半途失败留下
 「部分已 patch」的假成功。`patches/superseded-0.1.1/` 存放 0.1.1 版本的整文件，
 **不参与应用**——它们若被套到 0.1.5 的包上会用旧实现覆盖新包。
-
-## 发现：0.1.5 原生的文件卡片可能与桌面端的文件芯片重叠
-
-`dsh-client-ui-chat` 的 `UserStyleBubble` 已经原生渲染 durable 文件附件卡片
-（`MessageItem_module_css_default.fileCard` + `FileTypeIcon` + `fileExtension` +
-`fileSizeText`），数据来自 0.1.5 官方的 `fileUploads` 收据流：
-
-客户端上传 → `receiptId` → 宿主 `ctx.fileUploads.resolve()` → durable
-`FileAttachmentRef` → 气泡上渲染成卡片，模型按引用读取。
-
-桌面端 `FileAttachmentCard` 覆盖的能力与它的差异：
-
-| 能力 | 0.1.5 原生 | 桌面端芯片 |
-| --- | --- | --- |
-| 文件卡片（图标/名/扩展名/大小） | ✅ | ✅ |
-| macOS 真实文件图标（`app.getFileIcon` 桥） | ❌（按扩展名给图标） | ✅ |
-| **文件夹上传** | **❌（已实测：`webkitdirectory` 在全部客户端包中零出现）** | ✅ |
-| 点击显示完整路径 | ❌ | ✅ |
-
-**结论：保留桌面端自己的文件处理（文本标题方案）**，不改为官方 `fileUploads`
-流程。理由是官方流程缺少三项桌面端已有能力，其中文件夹上传是实测确认的硬缺口
-（0.1.5 客户端包里没有任何 `webkitdirectory` 目录选择入口），而 README 第 6 条
-把「任意文件/文件夹上传」列为功能。代价是与官方文件卡片并存两套渲染路径。
-
-`patches/superseded-0.1.1/conversation-client.js` 保留了原实现，移植时以它为准。
-
-## chat 补丁（11 处）逐处说明
-
-| # | 行数 | 内容 | 0.1.5 处理建议 |
-| --- | --- | --- | --- |
-| 11 | +164 | `contentParts` 增加 `files` 收集 + `FileAttachmentCard`/`fileEmoji`/`normalizeFileBlock`/`parseFileCaption`/`DESKTOP_VISION_BRIDGE_DISPLAY` | 文件芯片部分视上面取舍；`DESKTOP_VISION_BRIDGE_DISPLAY` **必须移植**（隐藏桥接文本） |
-| 12 | +1 | 解构出 `files` | 随 11（注意 0.1.5 返回的是 `attachments` 不是 `images`） |
-| 13 | +4 | 渲染文件卡片列表 | 随 11 |
-| 14 | +2/−2 | 缩进连带调整 | 随 13 |
-| 15 | +126 | `UserMessageNodeView` 原位编辑（`useDshEditStore` + `__dshEditStore`） | 必须移植 |
-| 16 | +29 | `promptTargetKey` 时间轴定位 | 必须移植（锚点已重构，需定位） |
-| 17 | +5 | `olderRequestRef`/`promptNavigationRef` 等 refs | 必须移植 |
-| 18 | +1 | 滚到顶部 48px 内自动 `loadOlderAnchored()` | 必须移植 |
-| 19 | +1/−1 | 用 guard 取代分页按钮的 ref-null 断言 | 必须移植 |
-| 20 | +60 | 历史时间轴导航与自动逐页加载 | 必须移植 |
-| 21 | +0/−9 | 移除「加载更早」按钮 | 必须移植 |
-| 22 | +1 | 投影里带上 `messageId`（时间轴精确定位用） | 必须移植 |
-
-0.1.5 的 `contentParts` 签名已变：返回 `{ text, attachments, rest }`，其中
-`attachments` 同时承载 image 与 file 附件；原补丁的 `images` 字段已不存在。
-解构锚点也从 `const { text, images, rest }` 变为
-`const { text, attachments: contentAttachments, rest }`（`client.js:1234`）。

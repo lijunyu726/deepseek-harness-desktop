@@ -58,10 +58,12 @@ const OVERLAYS = [
     markers: ['desktopVisionMcpContent', 'delegateToVisionMcp', 'imageHostPath'],
   },
   {
-    patch: 'workspace-controller-index.js',
-    target: 'dsh-api-workspace-controller/lib/index.js',
-    // Workspace deletion cascades to each of its sessions before it unregisters.
-    markers: ['teardownSessionForDelete'],
+    patch: 'workspace-index.js',
+    target: 'dsh-workspace/lib/index.js',
+    // Restores the two registry methods the 0.1.5 line dropped while keeping
+    // archiveSession: the desktop shell's 归档管理 page needs both to purge a
+    // session permanently and to restore one from the archive set.
+    markers: ['unarchiveSession(sessionId)', 'deleteSession(sessionId)'],
   },
   {
     patch: 'chat-client.js',
