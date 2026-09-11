@@ -22,8 +22,18 @@ const DEFAULT_PORT = 3080
 /** Preload that terminates the service if its owning Electron process dies. */
 const CHILD_GUARD_PATH = fileURLToPath(new URL('./child-guard.mjs', import.meta.url))
 
-/** URL line printed by `dsh web` once listening, e.g. `dsh web: http://127.0.0.1:32768`. */
-const URL_LINE = /dsh web:\s+http:\/\/(127\.0\.0\.1|localhost):(\d+)/
+/**
+ * URL line printed by `dsh web` once listening.
+ *
+ * 0.1.1 printed a bare `dsh web: http://127.0.0.1:32768`; 0.1.5 appends the
+ * one-time browser-trust token, `dsh web: http://127.0.0.1:32768/?token=…`.
+ * The window MUST carry that token — an unauthenticated `/` answers 401
+ * ("dsh web authentication required") — so capture the whole URL rather than
+ * rebuilding it from host and port, which silently dropped the query.
+ *
+ * Group 1 is the full URL, group 2 the port, group 3 the query suffix.
+ */
+const URL_LINE = /dsh web:\s+(http:\/\/(?:127\.0\.0\.1|localhost):(\d+)(\S*))/
 
 /** Directories always offered on PATH, independent of what the login shell reports. */
 const STATIC_PATH_DIRS = [
@@ -267,7 +277,7 @@ export class DshServer {
         if (match && this.port === null) {
           this.port = Number(match[2])
           this.lastPort = Number(match[2])
-          this.url = `http://127.0.0.1:${this.port}`
+          this.url = match[1]
         }
         if (line.startsWith('[desktop-event] ') && typeof this.onDesktopEvent === 'function') {
           try {

@@ -137,7 +137,12 @@ try {
     }
     if (!Number.isInteger(config.serverPort)) return undefined
     const response = await fetch(`http://127.0.0.1:${config.serverPort}/`, { signal: AbortSignal.timeout(2_000) })
-    return response.ok ? config.serverPort : undefined
+    // 0.1.5's browser-trust fence answers 401 on an unauthenticated `/`
+    // (the desktop shell navigates with a one-time token), so `response.ok`
+    // never becomes true and this probe could only ever time out. Readiness
+    // means the port answers with a client-level status at all; a 5xx or a
+    // refused connection still counts as not-ready.
+    return response.status < 500 ? config.serverPort : undefined
   }, 120, 500, 'isolated desktop server readiness')
 
   const renderer = await waitFor(
