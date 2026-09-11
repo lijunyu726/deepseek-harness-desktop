@@ -34,7 +34,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 ### 鲸鱼思考强度变阻器
 
-接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：收起态渲染与 shell 默认模型芯片一致的触发器，点击后展开当前模型的思考强度滑块。**模型身份与 effort 分离**：普通层只按当前模型目录上报的 `reasoning.efforts` 生成刻度；官方 rc.2 的 Vision/Flash/Pro 均为 `Off → Low → High → Max`。高级层单独切换 provider/model 或 effort，选中统一走 `session.selectModel`。因此第三个模型不会把轨道扩成 9/12 档，桌面/手机仍共享会话级状态。Vision 复用 Flash 图集，Low 复用对应 High 图集但播放更慢；显示标签始终保留真实 Vision 身份。
+接管 `conversation.input.model` 单席位（priority -10 压过 shell 的 0）：收起态渲染与 shell 默认模型芯片一致的触发器，点击后展开当前模型的思考强度滑块。**模型身份与 effort 分离**：普通层只按当前模型目录上报的 `reasoning.efforts` 生成刻度，**对所有供应商一视同仁、不硬编码模型 id**（DeepSeek 原来的固定三档模型轨道已在 v1.5.0 删除：V4.1 线把 Vision/Flash 合并为 `deepseek-flash`，`deepseek-v4-pro` 自 2026-09-14 12:00 起也路由到它，三档会指向同一个模型）。高级层单独切换 provider/model 或 effort，选中统一走 `session.selectModel`。轨道刻度数等于该模型的 effort 档位数，桌面/手机共享会话级状态。Low 复用对应 High 图集但播放更慢。
 
 运行时素材为 `lib/whale-sprites/*.webp` 下的六套 1056×512 无损 WebP（6×4 网格、24 帧、单格 176×128）。宿主在 `/dsh-desktop/whale-sprites/<state>.webp` 注册精确同源路由；客户端按模型家族与 effort 映射素材和速度，切档通过 React key 重启动画，系统开启“减少动态效果”时停在首帧。
 
@@ -46,7 +46,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 ## 图片双路径（rc.2 原生多模态 + 看图 MCP 委派）
 
-`@deepseek-ai/dsh-llm-deepseek@0.1.1-rc.2` 原生发布 `deepseek-v4-flash-vision-exp`（text+image）。Vision 模型图片沿官方链路：附件存储与预算化预处理后优先上传 DeepSeek Files API，按 endpoint/API-key/variant 复用 `file_id`；解析失败时整次请求切换为相同派生图片的 inline 表示。
+`@deepseek-ai/dsh-llm-deepseek@0.1.5-rc.2` 原生公布 `deepseek-flash`（DeepSeek-V4.1-Flash，text+image）——**默认模型本身即可读图**，图片沿官方链路：附件存储与预算化预处理后优先上传 DeepSeek Files API，按 endpoint/API-key/variant 复用 `file_id`；解析失败时整次请求切换为相同派生图片的 inline 表示。看图 MCP 委派只对真正纯文本的模型生效；其本地对象路径经 attachment 接缝的 `imageHostPath(ref)` 取得（0.1.5 不再暴露 `root`）。
 
 文本模型（`inputModalities` 不含 image）的 GUI 图片走桌面看图 MCP 委派：
 
@@ -55,11 +55,11 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 3. `patches/agent-loop-index.js` 的 `stripDelegatedImages` 在 `buildRequest` 边界剥离桥接消息的 image 块——转录仍渲染图片，模型请求只有桥接文本；
 4. 模型调用 `mcp__vision__describe_image` 读图，工具结果经普通工具循环回到对话；客户端 `contentParts` 用 `DESKTOP_VISION_BRIDGE_DISPLAY` 隐藏桥接文本。
 
-`check-rc2-runtime.mjs` 验证模型、Files API 与官方 Persistent Bash 标记。
+`scripts/check-runtime.mjs` 验证版本钉、`deepseek-flash` 多模态目录、attachment 接缝的 `imageHostPath`、已删包缺席与官方 Persistent Bash 标记。
 
 ## 上传增强（v1.3.0）
 
-三个 rc.2 上游包（conversation / apiproxy / agent-loop）不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证）。workspace 与 web-frontend 保持官方 rc.2 的归档生命周期和附件 slot 实现（v1.4.2 的 `workspace-client.js` / `web-frontend-bundle.js` 覆盖已随 rc.2 移除并清理，工作区会话行不再提供删除入口，删除统一在归档管理）。
+上游包不在本仓库构建，增强以**完整文件**存在 `patches/`，由 `scripts/apply-upload-enhancements.mjs` 的**表驱动**清单覆盖进 node_modules（原文件留 `.upstream-backup`，幂等 + 语法预检，`--check` 模式验证；**缺任一补丁即拒绝打包**）。0.1.5 拆分了上游包，落点为：`dsh-api-session-controller`、`dsh-workspace`、`dsh-agent-loop`、`dsh-client-ui-chat`。工作区会话行不提供删除入口，删除统一在归档管理。
 
 - **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消；`useDshEditStore` 经 `useSyncExternalStore` 桥接插件 `window.__dshEditStore`）、历史 Prompt 稳定消息定位与顶部自动分页。
 - **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content（图片则 `decodeBase64` 校验 + `validateImage`/`saveImage` 落盘）；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；admit 按模态委派 `desktopVisionMcpContent`（看图 MCP 桥接）；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
