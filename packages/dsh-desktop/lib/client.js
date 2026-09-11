@@ -2076,6 +2076,15 @@ window.__ModuleLoader__.load({
       return `${WHALE_SPRITE_BASE}/${sprite}.webp`
     }
 
+    /**
+     * Display name for one catalog model. Upstream spells the V4.1 slug
+     * "DeepSeek-V41-Flash"; DeepSeek's own docs write "V4.1", so render the
+     * dotted form. Everything else passes through untouched.
+     */
+    function displayModelName(name) {
+      return String(name ?? '').replace(/^DeepSeek-V(\d)(\d+)-/, 'DeepSeek-V$1.$2-')
+    }
+
     function ModelRheostat({ sessionId, locked, connection }) {
       const [groups, setGroups] = react.useState(null)
       const [current, setCurrent] = react.useState(null)
@@ -2167,9 +2176,9 @@ window.__ModuleLoader__.load({
             provider: group.id,
             model: model.id,
             effort: effort.id,
-            modelName: model.name ?? model.id,
+            modelName: displayModelName(model.name ?? model.id),
             effortName: effort.name ?? effort.id,
-            modelLabel: model.name ?? model.id,
+            modelLabel: displayModelName(model.name ?? model.id),
             sprite: tier.sprite,
             duration: tier.duration,
           }
@@ -2351,7 +2360,7 @@ window.__ModuleLoader__.load({
         return group?.models?.find((m) => m.id === current.model) ?? null
       })()
       const triggerName = noStops
-        ? (currentModel?.name ?? current?.model ?? '模型')
+        ? displayModelName(currentModel?.name ?? current?.model ?? '模型')
         : stop.modelLabel
       const triggerEffort = noStops ? '' : stop.effortName
       const title = noStops
