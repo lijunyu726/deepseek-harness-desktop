@@ -102,6 +102,13 @@ registry 类里补回这两个方法（对上游差异 56 行）：
   删除会话日志 → 清理 `sessionPaths` 与 `headers` 索引（幂等，文件已不存在也 resolve）。
   另需把 `rm` 加进 `node:fs/promises` 的 import。
 
+  ⚠️ 踩坑：workspace 包里其实有**两个类**——`WorkspaceEntity`（每工作区，拥有
+  `mutate` / `detachSession` / `sessionIds`）与 `WorkspaceRegistry`（拥有
+  `archiveSession` / `sessionPaths` / `headers` / `enqueueOperation`）。第一版
+  `deleteSession` 误用了 `this.mutate`（registry 上没有，运行期会抛错），改为遍历
+  `this.list()` 找到所属实体再 `detachSession`。新增方法必须只用 registry 上的成员：
+  `enqueueOperation` / `requireState` / `setState` / `list` / `sessionPaths` / `headers`。
+
 因此 `api-workspace-controller` 覆盖层**不再需要**——功能回到了本项目自己的插件里。
 
 ### 待运行期验证

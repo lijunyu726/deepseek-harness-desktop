@@ -493,10 +493,14 @@ var WorkspaceRegistry = class extends Service {
 	*/
 	deleteSession(sessionId) {
 		return this.enqueueOperation(async () => {
-			await this.mutate((record) => record.sessionIds.includes(sessionId) ? {
-				...record,
-				sessionIds: record.sessionIds.filter((id) => id !== sessionId)
-			} : record);
+			// Workspace accounting: `mutate` and `detachSession` belong to a
+			// WorkspaceEntity, not the registry, so route through whichever
+			// entity currently owns the session.
+			for (const workspace of this.list()) {
+				if (!workspace.sessionIds.includes(sessionId)) continue;
+				await workspace.detachSession(sessionId);
+				break;
+			}
 			const state = this.requireState();
 			if (state.archivedSessionIds.includes(sessionId)) await this.setState({
 				...state,
