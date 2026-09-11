@@ -44,7 +44,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 输入 `@` 触发会话候选菜单。候选按会话 id 去重；同标题（且同创建日）的会话追加短 id 尾缀区分。提交时序列化为 `dsh-session:` URI，主机端在 `agent/pre-step` 由 session-reference resolver 解析并注入快照上下文；解析失败不阻断回合。
 
-## 图片双路径（rc.2 原生多模态 + 看图 MCP 委派）
+## 图片双路径（0.1.5 原生多模态 + 看图 MCP 委派）
 
 `@deepseek-ai/dsh-llm-deepseek@0.1.5-rc.2` 原生公布 `deepseek-flash`（DeepSeek-V4.1-Flash，text+image）——**默认模型本身即可读图**，图片沿官方链路：附件存储与预算化预处理后优先上传 DeepSeek Files API，按 endpoint/API-key/variant 复用 `file_id`；解析失败时整次请求切换为相同派生图片的 inline 表示。看图 MCP 委派只对真正纯文本的模型生效；其本地对象路径经 attachment 接缝的 `imageHostPath(ref)` 取得（0.1.5 不再暴露 `root`）。
 
@@ -64,7 +64,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 - **conversation 补丁**：上传管线（`__DSH_ADD_FILES__` 入口、`isImageFile` 双校验、`serializeImages` 产出 image/file/text 三类 part）、消息文件卡片渲染（`contentParts` → `FileAttachmentCard`，真实图标 + emoji 兜底）、ESC 原位编辑器（正文从 durable content 提取；Enter 重发、Shift+Enter 换行、Esc 取消；`useDshEditStore` 经 `useSyncExternalStore` 桥接插件 `window.__dshEditStore`）、历史 Prompt 稳定消息定位与顶部自动分页。
 - **apiproxy 补丁**：消息 wire schema 新增 `file` 块（`fileKind: file|folder`，只带元数据与路径、不带字节）；`durablePromptContent` 透传 file 块为 durable content（图片则 `decodeBase64` 校验 + `validateImage`/`saveImage` 落盘）；`desktopFileContent` 为模型附加"磁盘路径 + 非图片"文本说明；admit 按模态委派 `desktopVisionMcpContent`（看图 MCP 桥接）；`workspace.delete` 删除工作区注册前先捕获会话记账、逐个 `teardownSessionForDelete`（flush → 停 agent → 删日志 → 清注册，子代理归属会话跳过），`workspace.deleteSession` 复用同一 helper。
 - **agent-loop 补丁**：`buildRequest` 边界 `stripDelegatedImages` 剥离带桥接文本的 user 消息里的 image 块，让文本模型请求只含桥接文本。
-- **官方 attachment slot**：图片草稿与消息图库走 rc.2 的 `conversation.input.attachments` / `conversation.message.images`；桌面 conversation 覆盖只为普通文件另渲染元数据 chip/卡片，不修改 web-frontend 的哈希 bundle。
+- **官方 attachment slot**：图片草稿与消息图库走 0.1.5 的 `conversation.input.attachments` / `conversation.message.images`；普通文件直接走 0.1.5 原生上传流程，只有文件夹由桌面端以文本标题承载（原生无目录选择入口）。
 - **插件（packages/dsh-desktop）**：`saveUploadFile`（base64 → `~/.dsh/sessions/<项目>/<会话ID>/uploads/`，找不到会话目录回退 `~/.dsh/uploads/<会话ID>/`）、`copyFolderUpload`（整体递归复制，2000 文件/200MB/深度 8）、`pickFolderNative`/`resolvePickFolder`（主进程原生目录选择器桥）、`getFileIcon`/`resolveFileIcon`（macOS 图标桥）；客户端侧纯上传菜单、`SessionIdTracker`、`__DSH_SAVE_UPLOAD__`/`__DSH_GET_FILE_ICON__` 页面桥、ESC 编辑状态机。编辑重发只能走当前会话 `inputActions.setDraft()` → `inputActions.submit()`，成功交接后才清除原位编辑态。
 - **主进程（main/main.mjs）**：`pick-folder` 与 `file-icon` 两种 desktop-event 处理（dialog.showOpenDialog / app.getFileIcon → `executeJavaScript` 回注）。
 - **生命周期**：附件字节在会话目录内，删除会话由 `dsh-session-persistence-jsonl` 递归删目录（既有行为）；归档保留；file 块随会话日志持久化，历史回放保留卡片。
@@ -73,7 +73,7 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 
 - **工作区删除连带删除会话**：宿主 `workspace.delete` 删除注册前捕获 `workspace.sessionIds`，逐个执行与单会话删除相同的 teardown；单会话失败只告警不回滚。`origin === "subagent"` 的会话跳过（随父会话 teardown 清理，且从不作为顶层行渲染，不会落入 Ungrouped）。客户端删除后刷新会话基线，冷会话（无 live 帧）立即从列表消失。
 - **归档管理删除（v1.3.9 重做）**：插件宿主 `deleteSessions` remote（批量、每步超时兜底）改为**逐会话委托 ApiProxy 的 `workspace.deleteSession`**——与侧边栏删除同一条 teardown（停活体 agent → 解绑注册 → 删持久日志），因为 agent 工厂的解绑闭包是模块私有的，插件侧只做 `cancel + scope.dispose` 会留下 live 注册，被删会话以幽灵形式重回「未分组」（v1.3.1 版本的缺陷）。幽灵场景（日志已删但仍在 live 注册）下 teardown 先处置后报 session-not-found，宿主以「无 live 残留即视为删除成功」兜底。客户端单选删除二次确认内联在行原位（确认删除/取消与删除按钮同排），多选批量删除用顶部批量确认条；删除落库后 `gateway.refreshSessions()` 重拉会话基线，冷会话立即从侧边栏消失。无 ApiProxy 的宿主回退到 best-effort 序列。
-- **rc.2 归档生命周期**：主侧边栏使用官方 archive 流程，不再向新的 agent/session 注册表套用 rc.6 `remove(id)` 补丁。设置中的归档管理永久删除优先调用宿主暴露的删除 remote，缺失时由插件走 workspace registry 的 best-effort 清理并刷新客户端基线。
+- **归档生命周期**：主侧边栏使用官方 archive 流程，不再向新的 agent/session 注册表套用 rc.6 `remove(id)` 补丁。设置中的归档管理永久删除由插件完成：停活体 agent → `workspaceRegistry.deleteSession(id)`（该方法由 `patches/workspace-index.js` 补回）→ 刷新客户端基线。
 - **高峰/非高峰时段提示**：纯客户端组件 `PriceHoursHint`，浏览器时钟按 UTC+8 换算北京时间（无夏令时），9:00–12:00 / 14:00–18:00 判为高峰，其余为非高峰（价格为高峰一半）；30 秒刷新，仅两个标签，字号与工具行控件一致（13px/500/20px）。v1.3.8 定版：挂载在 `conversation.input.right`（位于输入卡底部工具行 `uV2eYG_row` 内），注入样式 `.uV2eYG_row{position:relative}` 后组件以 `position:absolute + translate(-50%,-50%)` 落在行中央——无测量代码，水平/垂直都随行自适应。迭代史上依次弃用的挂载：composer.dock → header.utilities → input.dock（fixed 定位 + 面板矩形测量）；v1.3.4 修复了 `Date.now()` 时间戳被误当 Date 实例的渲染崩溃（这是此前任何位置都看不到提示的根因）。
 - **历史 Prompt 按会话隔离（v1.3.2）与消息定位（v1.4.2）**：宿主记录每条 prompt 时携带 `String(agent.id)` 会话归属，v1.4.2 再携带 `message.id`；`promptHistory(limit, sessionId)` remote 按会话过滤。客户端 `PromptHistoryRail` 随会话切换重载；点击只导航到原消息，不再预填输入框，ChatView 负责按需加载旧页并定位。
 
@@ -82,11 +82,11 @@ dsh 在服务启动瞬间对网络接口做一次性快照生成 `trustedHosts`�
 - DeepSeek 凭据只由 dsh 自身的模型配置持有；插件只调用 `user/balance` 查询余额。
 - 历史 Prompt 属于本机用户数据，只写入 `$DSH_HOME/desktop/prompt-history.json`，不进入仓库、构建产物或日志；单条上限 64 KiB。
 - vision MCP 的 API Key 只存本机（`vision.config.json`，权限 600，接口不回传浏览器）；缺省回退到环境变量 / `$DSH_HOME/.credentials.yaml`。
-- 图片字节先存于 `$DSH_HOME/attachments/v1/objects/<prefix>/<sha256>`；选择官方 Vision 模型发送时，由 rc.2 按请求版本上传 DeepSeek Files API（失败时 inline 回退）。普通本地图片只有在 Agent 显式调用 vision MCP 时才走该工具配置。
+- 图片字节先存于 `$DSH_HOME/attachments/v1/objects/<prefix>/<sha256>`；默认模型 `deepseek-flash` 原生读图，发送时由 0.1.5 按请求版本上传 DeepSeek Files API（失败时 inline 回退）。普通本地图片只有在 Agent 显式调用 vision MCP 时才走该工具配置。
 
 ## Persistent Bash 官方实现
 
-官方 rc.2 已直接包含完整快速路径：`dsh-terminal-bash` 的受控 `PROMPT_COMMAND` 每次重设 `PS1`，`dsh-tool-bash-persistent` 初始化只关闭 echo，并以 terminal seam 的 `stdin_read` 结算部分输出。本项目不再修改这两个包；`upstream:check` 做静态契约验证，`benchmark:bash` 对最终 `.app` 做真实 PTY 验证。
+官方运行时已直接包含完整快速路径：`dsh-terminal-bash` 的受控 `PROMPT_COMMAND` 每次重设 `PS1`，`dsh-tool-bash-persistent` 初始化只关闭 echo，并以 terminal seam 的 `stdin_read` 结算部分输出。本项目不再修改这两个包；`upstream:check` 做静态契约验证，`benchmark:bash` 对最终 `.app` 做真实 PTY 验证。
 
 ## Release 纯净度边界
 
@@ -94,6 +94,6 @@ Electron `files` 白名单只允许 `main/`、`assets/`、根 `package.json` 和
 
 ## 构建与回退
 
-- 构建链：`upstream:check` → `upload:prepare` → `pack:plugin`（tgz → node_modules）→ `sanitize:runtime` → electron-builder 运行时白名单（arm64 DMG+zip，未签名）→ `audit:release`（含最终 App 的 rc.2、编辑和历史定位复测）。
+- 构建链：`upstream:check` → `upload:prepare` → `pack:plugin`（tgz → node_modules）→ `sanitize:runtime` → electron-builder 运行时白名单（arm64 DMG+zip，未签名）→ `audit:release`（含最终 App 的运行时能力、编辑与历史定位复测）。
 - 校验：`npm run upstream:check`、`npm run upload:check`、`npm run edit:check -- --installed`、`npm run history:check -- --installed`、`node --check`、`npm run benchmark:bash`（加载打包应用内模块的真实 PTY 时延）、`node scripts/verify-cold-start.mjs`（项目外副本、隔离 `DSH_HOME`/userData、服务与渲染器）、最终 `.app` 与 DMG 纯净度复扫。
 - 回退：插件代码回退后重跑 `pack:plugin` + `dist`；补丁异常时重装依赖重跑；运行时行为回退只需清桌面配置目录，数据不受影响。
