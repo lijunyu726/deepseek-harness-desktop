@@ -45,6 +45,9 @@ node_modules/          安装产物——绝不提交
 
 ## 关键实现约束（改代码前必读）
 
+- **量上游差异必须以「纯净 npm 包」为基准**：不要用 `node_modules/**.upstream-backup`——它未必是纯净上游（本项目曾出现备份比纯净版多 481 行的情况，会把真实改动量严重低估）。取基准的做法：`npm pack @deepseek-ai/<pkg>@<被替换的版本>` 解包后与新补丁 diff。
+- **`llm-deepseek.models` 是整体替换内置目录的**：设置文档里写这个分节会丢掉内置条目的一切未列出字段；**省略 `inputModalities` 即按 `["text"]` 处理**，会让默认的 `deepseek-flash` 丢掉 V4.1-Flash 的原生读图。要用该分节就必须把 `inputModalities`（以及 `imagePixelBudget` / `imageMaxBytes` / `systemPromptUpdate`）一并写全。
+- **`session.prompt` 的 codec 是 strict**：0.1.5 的 `content` 联合只接受 `text` / `image` / 带**必填** `receiptId` 的 `file`。桌面端自定义的文件元数据块不在其中，且 schema 由 typert 生成在宿主与客户端各一份（`typert.host.js`、`dsh-api-remotes/lib/client.js`），改它等于加两个大覆盖层。因此桌面端的文件/文件夹卡片改走**文本标题**（`📎 附件：…` / `📁 文件夹：…`），由 `parseFileCaption` 渲染——它产出的 `{kind, name, size, path}` 与原生 `normalizeFileBlock` 完全一致。普通文件则直接走 0.1.5 原生上传流程。
 - **上传增强 = 整文件补丁，不许改成字符串手术**：0.1.5 的增强以完整文件存在 `patches/`，由 `apply-upload-enhancements.mjs` 的**表驱动**清单覆盖（原文件留 `.upstream-backup`）。0.1.5 拆分了上游包，落点随之变化：apiproxy → `dsh-api-session-controller` + `dsh-workspace`；conversation → `dsh-client-ui-chat`（composer 侧不再需要补丁）。改动流程：改已装依赖文件 → 验证 → 同步回 `patches/` → `npm run upload:prepare` 再构建。`patches/superseded-0.1.1/` 是 0.1.1 版本的整文件，**只作参考**，套到 0.1.5 的包上会用旧实现覆盖新包。
 - **删除会话只有归档管理一个入口**：工作区/侧边栏会话行不提供「删除会话」（官方 rc.2 的 workspace 行菜单只有重命名/复制/归档；v1.4.2 的行内删除来自已废弃的 workspace-client 覆盖，已砍掉）。永久删除统一在「设置 → 归档管理」：`deleteSessions` remote → 逐会话停活体 agent（`live.cancel` + `whenIdle` + `scope.dispose`，每步有超时兜底）→ `workspaceRegistry.deleteSession(id)`（解绑记账 → 移出归档集 → 删日志 → 清索引，幂等）。**0.1.5 删除了 ApiProxy 与 registry 的 `deleteSession` / `unarchiveSession`，这两个方法由 `patches/workspace-index.js` 补回**；不得改回依赖 ApiProxy。支持单选（行内二次确认）与多选批量（顶部批量条确认）。不得为恢复行内删除重新引入 workspace-client 覆盖。
 - **file 块协议约束**：消息 wire 的 `file` 块只带元数据与路径，**不带字节**（字节存会话目录）；`desktopFileContent` 必须为每个 file 块附加 text 说明，且不得把 file 块当 image（`isImageFile` 双校验 MIME+扩展名）。文件卡片渲染依赖 durable content 里的 file 块，删除会话递归清理 `uploads/` 是预期行为。
@@ -58,7 +61,18 @@ node_modules/          安装产物——绝不提交
 - **路径自愈**：插件内所有定位 app 资源（usage-scan.mjs、vision-server.mjs 模板）都用「模块目录相对路径 + `process.execPath` 回退」双候选；`ensureVisionCommand` 会在启动时把 vision MCP 行的 `command` 从系统 `node` 改写为应用自带 Node（app 移动后自动重写）。**不要把绝对路径写死在插件里。**
 - **插槽优先级**：接管 shell 的单席位要用比 0 更低的 priority（鲸鱼变阻器用 -10）。
 - **鲸鱼图集契约**：素材固定为 `flash-off/high/max`、`pro-off/high/max`；每张是 1056×512、6×4 网格、24 帧、176×128 单元格的带透明通道无损 WebP。变阻器**对所有供应商（含 DeepSeek）走同一条按 catalog 现读的 effort 轨**：轨道刻度来自当前模型自己的 reasoning 档位，拖动/点击即 `selectModel` + 固定该档 effort。DeepSeek 原来那条固定三档模型轨道（Vision Max → Flash Max → Pro Max）已删除——V4.1 线把 Vision/Flash 合并成 `deepseek-flash` 一个原生多模态模型，`deepseek-v4-pro` 也自 2026-09-14 12:00（北京时间）起路由到它，三个档位会指向同一个模型。**不得再引入硬编码的模型 id 列表**：读 catalog 才能让未来的 V4.1 Pro 自动出现。effort 精细调节仍在「高级」面板（模型/供应商/思考强度三个子页）。
-- **客户端连接面**：Typert 远程走 `connection.rpc.call('/api', 'globalInstructions/<m>')`；shell 原生 unary 走 `connection.api.sessions/llm/...`（不是 `connection.sessions`）。
+- **客户端连接面（0.1.5 已变，务必按新写法）**：
+  - Typert 远程仍走 `connection.rpc.call('/api', 'globalInstructions/<m>')`，未变。
+  - **`connection.api` 在 0.1.5 里整个不存在**（不是某个方法改名）。会话类调用改走 `remote.session.<method>()`，信封也从 `{result: {ok, value}}` 变成 `{ok, value}`。
+  - **Cordis 只把「声明过的」服务暴露为 ctx 属性**：插件顶层必须写
+    `const inject = ['slots', 'connection', 'remote', 'remote.session']`——
+    `remote` 与 `remote.session` **两个都要**，否则报
+    `cannot get property "remote.session" without inject`；只写 `remote` 而用
+    `ctx.get('remote')` 则拿到 `undefined`（服务未声明时不进 ctx）。官方
+    `dsh-client-ui-model-selection` 的 `static inject` 就是这三项写法，照抄即可。
+  - 这类调用在 `useEffect` 里一旦同步抛错（例如对 undefined 取属性），`.catch()`
+    抓不到，会直接崩掉整个槽位并在控制台留下
+    `slot entry crashed in '<slot>'`。**排查槽位不渲染时先看这一条。**
 - **版本单一来源**：应用/DMG 版本来自根 `package.json`；启动页通过 `app.getVersion()` 接收该版本，不得再硬编码展示版本号。dsh 上游依赖版本可单独出现在诊断信息中，但不能冒充桌面应用版本。
 - **安全围栏**：`settings.describe`/`credentials.*` 被 dsh 硬锁回环地址，手机端会 403——这是上游安全设计，不要试图在补丁里放宽。
 - **局域网可信名单**：dsh 启动瞬间对网络接口做一次性快照，网络切换时可能拿到空集导致手机 403。插件每 30 秒把当前 IPv4 补进 connection 行的 `trustedHosts`（`entry.update`，不写补丁文件），并过滤 198.18/15、169.254/16 这类不可达的虚拟隧道地址。
@@ -72,6 +86,9 @@ node_modules/          安装产物——绝不提交
   再去掉 `--dump-config` 启动并 `curl` 首页；`--patch <desktop.patch.yml>` 必须放在子命令**之前**。
   桌面插件要按 `main/server.mjs` 的做法链进 `$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh-desktop`，否则 `desktop` 行会 ERR_MODULE_NOT_FOUND。
   日志里出现 `N entry did not activate` 时，注意 **0.1.5 新增了启动期的 `assertEntriesActivated`**：任何在 `loader.await()` 之后立刻触发 fiber 重启的插件代码都会与它竞争而让整树启不来（本项目已因此修过 connection trust heal）。
+- **打包后必跑 `node scripts/verify-cold-start.mjs`**：它把 `.app` 复制到项目树**之外**、以隔离 `DSH_HOME`/userData 冷启动，是唯一能证明「装到别的机器也能起」的检查。**在仓库内跑冒烟会骗过你**：`release/` 位于项目树中，Node 向上解析会借用项目 `node_modules`，被 electron-builder 裁掉的依赖照样能加载；装到 `/Applications` 后没有上层可借，立刻 `ERR_MODULE_NOT_FOUND`（已实际踩过）。它需要网络为隔离 profile 安装依赖，本机应带代理：
+  `HTTP_PROXY=... HTTPS_PROXY=... NO_PROXY=127.0.0.1,localhost node scripts/verify-cold-start.mjs`
+  通过标准：`renderer.title` 为 `DeepSeek Harness`、`editStoreReady` 与 `editBridgeContract` 均为 `true`、`pluginLoadFailureDetected` 为 `false`。
 - 完整应用冒烟：复制 release 应用为 `TestApp.app`，用独立 `DSH_HOME` + `ELECTRON_RUN_AS_NODE=1` 启动（注意：插件必须由应用内 node_modules 解析，加载器不认 profile 里的软链指向的其它副本；补丁参数 `--expose-internals` 必须在 bin.js 之前）；
 - 浏览器交互：ego-browser（`useOrCreateTaskSpace` + 手机/桌面视口），测完 `completeTaskSpace`；
 - 打包产物核对：检查 `release/mac-arm64/…app/node_modules/@deepseek-ai/dsh-desktop/lib` 与新代码一致；
