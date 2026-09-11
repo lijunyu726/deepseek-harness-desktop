@@ -765,13 +765,9 @@ var SessionCommandController = class {
 						delegateToVisionMcp = model.inputModalities?.includes("image") !== true;
 					}
 					const admission = resolvePromptFileReceipts(request.content, (receiptId) => this.ctx.fileUploads.resolve(agent, receiptId));
-					const admitted = await this.ctx.attachments.admitPromptContent(admission.content.filter((part) => !isDesktopMetadataFile(part)));
-					let admittedIndex = 0;
-					const mergedContent = admission.content.map((part) => isDesktopMetadataFile(part) ? part : admitted[admittedIndex++]);
-					const durableContent = desktopFileContent(mergedContent);
-					const modelContent = delegateToVisionMcp ? desktopVisionMcpContent(this.ctx, durableContent) : durableContent;
+					const admittedContent = await this.ctx.attachments.admitPromptContent(admission.content);
 					const message = createUserMessage({
-						content: modelContent,
+						content: delegateToVisionMcp ? desktopVisionMcpContent(this.ctx, admittedContent) : admittedContent,
 						source
 					});
 					if (this.ctx.agents.get(agent.id) !== agent) throw new RemoteError("session/not-found", `session "${agent.id}" was disposed during prompt admission`, { sessionId: agent.id });
@@ -929,7 +925,6 @@ var SessionCommandController = class {
 };
 /** Desktop-only delegation from GUI image parts to the configured vision MCP. */
 const DESKTOP_VISION_MCP_TOOL = "mcp__vision__describe_image";
-const DESKTOP_ATTACHMENT_ID = /^sha256:([a-f0-9]{64})$/;
 /**
 * Rewrite each admitted image block into the local object path the vision MCP
 * can read, keeping the image block itself for transcript display.
@@ -953,40 +948,11 @@ function desktopVisionMcpContent(ctx, content) {
 		];
 	});
 }
-/** Attach a tool-readable text note beside every durable file/folder block. */
-function desktopFileContent(content) {
-	return content.flatMap((block) => {
-		if (block.type !== "file") return [block];
-		const label = block.fileKind === "folder" ? "folder" : "file";
-		const name = typeof block.name === "string" && block.name !== "" ? block.name : "attachment";
-		const sizeText = block.size < 1024 ? `${block.size} B` : block.size < 1048576 ? `${(block.size / 1024).toFixed(1)} KB` : `${(block.size / 1048576).toFixed(2)} MB`;
-		const pathNote = typeof block.path === "string" && block.path !== ""
-			? ` It is saved on disk at ${JSON.stringify(block.path)} — read it with your filesystem tools when the task needs its content.`
-			: " Its bytes are not inline in the chat; ask the user where it is on disk if you need to read it.";
-		return [
-			block,
-			{
-				type: "text",
-				text: `[The user attached a ${label} named "${name}" (${sizeText}).${pathNote} This is NOT an image attachment — do not use the vision/看图 tool on it.]`
-			}
-		];
-	});
-}
-/**
-* A desktop metadata file block describes bytes the desktop shell already
-* stored in the session directory, so it carries no upload receipt and the
-* official admission path must leave it alone.
-*/
-function isDesktopMetadataFile(part) {
-	return part.type === "file" && part.attachment === undefined;
-}
 function resolvePromptFileReceipts(content, stagedFile) {
 	const receiptIds = /* @__PURE__ */ new Set();
 	return {
 		content: content.map((part) => {
 			if (part.type !== "file") return part;
-			// Desktop metadata block: no receipt to resolve.
-			if (isDesktopMetadataFile(part)) return part;
 			const attachment = stagedFile(part.receiptId);
 			if (attachment === void 0) throw new RemoteError("session/attachment-invalid", "File was not uploaded for this session.", { reason: "FILE_NOT_STAGED" });
 			receiptIds.add(part.receiptId);

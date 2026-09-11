@@ -52,10 +52,10 @@ const OVERLAYS = [
   {
     patch: 'session-controller-index.js',
     target: 'dsh-api-session-controller/lib/index.js',
-    // Prompt admission: desktop metadata file blocks bypass the official
-    // receipt path, and text-only models delegate their images to the vision
-    // MCP through the attachment seam's imageHostPath.
-    markers: ['desktopFileContent', 'desktopVisionMcpContent', 'isDesktopMetadataFile', 'imageHostPath'],
+    // Prompt admission: a text-only model delegates its images to the vision
+    // MCP instead of rejecting them, resolving the local object through the
+    // attachment seam's imageHostPath.
+    markers: ['desktopVisionMcpContent', 'delegateToVisionMcp', 'imageHostPath'],
   },
   {
     patch: 'workspace-controller-index.js',
