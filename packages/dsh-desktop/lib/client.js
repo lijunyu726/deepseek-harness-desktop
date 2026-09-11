@@ -2070,25 +2070,6 @@ window.__ModuleLoader__.load({
     }
 
     const WHALE_SPRITE_BASE = '/dsh-desktop/whale-sprites'
-    const DEEPSEEK_MODEL_VISUALS = {
-      'deepseek-v4-flash-vision-exp': { label: 'Vision', family: 'flash' },
-      'deepseek-v4-flash': { label: 'Flash', family: 'flash' },
-      'deepseek-v4-pro': { label: 'V4 Pro', family: 'pro' },
-    }
-    const DEEPSEEK_EFFORT_VISUALS = {
-      flash: {
-        off: { sprite: 'flash-off', duration: 3.0 },
-        low: { sprite: 'flash-high', duration: 2.45 },
-        high: { sprite: 'flash-high', duration: 2.0 },
-        max: { sprite: 'flash-max', duration: 1.7 },
-      },
-      pro: {
-        off: { sprite: 'pro-off', duration: 2.4 },
-        low: { sprite: 'pro-high', duration: 1.95 },
-        high: { sprite: 'pro-high', duration: 1.6 },
-        max: { sprite: 'pro-max', duration: 1.333 },
-      },
-    }
     const WHALE_SPRITES = ['flash-off', 'flash-high', 'flash-max', 'pro-off', 'pro-high', 'pro-max']
 
     function whaleSpriteUrl(sprite) {
@@ -2153,38 +2134,13 @@ window.__ModuleLoader__.load({
       }, [])
 
       const stops = react.useMemo(() => {
-        // DeepSeek uses a fixed three-stop MODEL track: Vision Max → Flash
-        // Max → Pro Max. Dragging switches the model (effort pinned to its
-        // max tier); fine-grained effort control lives in the expanded 高级
-        // pane. The default model (deepseek-v4-flash) is the middle stop.
-        if (current?.provider === 'deepseek-official') {
-          const group = (groups ?? []).find((g) => g.id === 'deepseek-official')
-          if (group === undefined) return []
-          const ORDER = ['deepseek-v4-flash-vision-exp', 'deepseek-v4-flash', 'deepseek-v4-pro']
-          const track = []
-          for (const modelId of ORDER) {
-            const model = (group.models ?? []).find((entry) => entry.id === modelId)
-            if (model === undefined) continue
-            const efforts = model.reasoning?.efforts ?? []
-            const maxEffort = efforts.find((e) => e.id === 'max') ?? efforts[efforts.length - 1]
-            if (maxEffort === undefined) continue
-            const modelVisual = DEEPSEEK_MODEL_VISUALS[model.id] ?? { label: model.name ?? model.id, family: 'flash' }
-            const effortVisuals = DEEPSEEK_EFFORT_VISUALS[modelVisual.family] ?? DEEPSEEK_EFFORT_VISUALS.flash
-            const visual = effortVisuals[maxEffort.id] ?? effortVisuals.max
-            if (visual === undefined) continue
-            track.push({
-              provider: group.id,
-              model: model.id,
-              effort: maxEffort.id,
-              modelName: model.name ?? model.id,
-              effortName: maxEffort.name ?? maxEffort.id,
-              modelLabel: modelVisual.label,
-              sprite: visual.sprite,
-              duration: visual.duration,
-            })
-          }
-          return track
-        }
+        // Every provider — DeepSeek included — gets an effort track built from
+        // the CURRENT model's own reasoning ladder. DeepSeek used to have a
+        // fixed three-model stop list (Vision/Flash/Pro), but the V4.1 line
+        // collapsed those into one unified multimodal model, so a model
+        // switcher no longer has anything to switch between; deepseek-v4-pro
+        // additionally routes to V4.1 Flash. Reading the catalog instead of a
+        // hardcoded list also means a future V4.1 Pro appears automatically.
         // Other vendors: adapt the stops to the CURRENT model's own
         // reasoning efforts (whatever the catalog reports).
         if (current === null) return []
@@ -2241,9 +2197,9 @@ window.__ModuleLoader__.load({
 
       const stopIndex = react.useMemo(() => {
         if (stops.length === 0 || current === null) return 0
-        // Exact model+effort match first (third-party effort tracks); the
-        // DeepSeek three-stop track falls back to a model-only match so a
-        // session running e.g. Flash·high still highlights the Flash stop.
+        // Exact model+effort match first, then the model's default effort, then
+        // a model-only match — so a session whose effort differs from the track
+        // still highlights the right model instead of falling back to stop 0.
         let idx = stops.findIndex((s) => s.model === current.model && s.effort === current.reasoningEffort)
         if (idx === -1) {
           const defaultEffort = (groups ?? [])
