@@ -78,9 +78,12 @@ for (const marker of [
 //    normalized-image object through this seam method rather than rebuilding
 //    the path from a root property the 0.1.5 attachment store no longer
 //    exposes.
-const attachmentSeam = source('node_modules/@deepseek-ai/dsh-attachment/lib/types/index.d.ts')
-if (!attachmentSeam.includes('imageHostPath(ref: ImageAttachmentRef)')) {
-  throw new Error('attachment seam is missing imageHostPath(ImageAttachmentRef) — the vision bridge cannot resolve local image objects')
+// Assert against the runtime implementation, not the `.d.ts`: electron-builder's
+// runtime whitelist ships no type declarations, and the abstract seam's empty
+// body would not prove the local backend can actually resolve a path.
+const attachmentLocal = source('node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js')
+if (!attachmentLocal.includes('imageHostPath(ref)')) {
+  throw new Error('local attachment backend is missing imageHostPath(ref) — the vision bridge cannot resolve local image objects')
 }
 
 // 5. Persistent Bash stays the official implementation (no prompt surgery).
