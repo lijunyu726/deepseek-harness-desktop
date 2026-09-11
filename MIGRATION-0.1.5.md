@@ -110,15 +110,15 @@ z.object({ "type": z.literal("file"), "receiptId": z.string() })   // 必填
 | --- | --- | --- |
 | 文件卡片（图标/名/扩展名/大小） | ✅ | ✅ |
 | macOS 真实文件图标（`app.getFileIcon` 桥） | ❌（按扩展名给图标） | ✅ |
-| 文件夹上传 | ❓ 待确认 | ✅ |
+| **文件夹上传** | **❌（已实测：`webkitdirectory` 在全部客户端包中零出现）** | ✅ |
 | 点击显示完整路径 | ❌ | ✅ |
 
-**因此 chat 补丁里的文件芯片部分（11–14 共 4 处、约 200 行）可能不需要移植**，
-改为让桌面端走官方 `fileUploads` 流程即可。这会把 conversation/chat 两个补丁的
-文件相关改动整体消掉，代价是失去 macOS 真实图标、文件夹上传与路径显示。
+**结论：保留桌面端自己的文件处理（文本标题方案）**，不改为官方 `fileUploads`
+流程。理由是官方流程缺少三项桌面端已有能力，其中文件夹上传是实测确认的硬缺口
+（0.1.5 客户端包里没有任何 `webkitdirectory` 目录选择入口），而 README 第 6 条
+把「任意文件/文件夹上传」列为功能。代价是与官方文件卡片并存两套渲染路径。
 
-这个取舍需要用户拍板；`patches/superseded-0.1.1/conversation-client.js` 保留了
-原实现，若要保留随时可以移植。
+`patches/superseded-0.1.1/conversation-client.js` 保留了原实现，移植时以它为准。
 
 ## chat 补丁（11 处）逐处说明
 
