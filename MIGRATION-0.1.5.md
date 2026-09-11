@@ -120,6 +120,49 @@ registry 类里补回这两个方法（对上游差异 56 行）：
 若确实残留，可行方向是让 `deleteSession()` 一并从 header 索引与 `session/list`
 的枚举源里剔除（`session/list` 的枚举来源需再确认）。
 
+## 修正：文件处理改走「原生文件 + 桌面文件夹」混合方案
+
+上一轮看到 0.1.5 无文件夹上传后，结论是「整套保留桌面端文件处理」。本轮细读
+0.1.5 的 composer 后发现那个结论低估了成本：**0.1.5 的附件管线是重建过的**，
+不是可以照搬的同一套结构。
+
+0.1.5 的实际管线（`dsh-client-ui-conversation/lib/client.js`）：
+
+- `serializeDraftAttachments(attachmentIds)`（:3111）——图片经 `encodeImage()` 内联成
+  base64；**普通文件必须引用后台完成的上传收据 `{type:"file", receiptId}`，收据没
+  ready 就抛错**，且明确注释「never reread browser bytes」。
+- 草稿附件由 `fileUploads` 快照驱动（`file-upload` 插件 + 宿主 `ctx.fileUploads`）。
+- 另有 `QueueFile` 组件、队列路径 `serializeAttachments()` 等**两处以上**调用点。
+
+桌面端的模型是另一套：宿主桥接把文件写进会话目录，客户端发路径元数据
+（`__dshFolderPath` / `__dshSavedPath` / `__DSH_SAVE_UPLOAD__`）。
+
+**两者要强行合并，就得重写 composer 的附件管线，而不是移植 8 处 diff。**
+
+### 改为混合方案
+
+| 类型 | 走哪条 | 补丁量 |
+| --- | --- | --- |
+| 普通文件 | **0.1.5 原生流程**（后台上传 + 收据 + 原生文件卡片） | 0 |
+| 文件夹 | 桌面端处理，发文本标题（原生没有目录选择入口） | ~15 行 |
+| 图片 | 0.1.5 原生内联（`encodeImage`） | 0 |
+
+理由：桌面端原来的文件处理本身就是**对 0.1.5 尚未提供之能力的变通**；0.1.5 现在
+原生提供了，而且更完整（后台上传、进度、跨会话可见、模型按 durable 引用读取）。
+强行保留旧实现等于长期维护一套与上游重复的管线。
+
+代价：普通文件失去 macOS 真实图标与点击显示路径（原生卡片按扩展名给图标）。
+文件夹上传保留——它是实测确认的原生硬缺口。
+
+### 具体接入点
+
+`serializeDraftAttachments` 里，在图片分支之后、收据分支之前插入文件夹分支：
+draft 附件的 `file.__dshFolderPath` 非空时，产出一对文本
+（`📁 文件夹：<名> → <路径>` 供芯片渲染 + `[The user attached the folder …]` 供模型读），
+其余文件落回原生收据分支。注意返回结构由 `map` 改为 `flatMap` 语义（一个附件产出
+两个 part），且 `serializeAttachments()`（约 :2922）与队列路径（约 :2950）两处调用点
+都要覆盖。
+
 ## 覆盖层清单（当前）
 
 | 补丁 | 目标 | 状态 |
