@@ -248,7 +248,18 @@ async function openWindow(target) {
     return { action: 'deny' }
   })
   window.webContents.on('will-navigate', (event, targetUrl) => {
-    if (server?.url && !targetUrl.startsWith(server.url)) {
+    // Compare ORIGINS, not whole URLs: server.url now carries the 0.1.5
+    // one-time ?token=… that only the very first navigation has, so a
+    // startsWith test would treat every later in-app route as external and
+    // bounce it to the system browser.
+    const sameOrigin = (() => {
+      try {
+        return new URL(targetUrl).origin === new URL(server.url).origin
+      } catch {
+        return false
+      }
+    })()
+    if (server?.url && !sameOrigin) {
       event.preventDefault()
       if (/^https?:/.test(targetUrl)) void shell.openExternal(targetUrl)
     }

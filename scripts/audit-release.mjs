@@ -24,7 +24,11 @@ const textExtensions = new Set(['.js', '.mjs', '.cjs', '.json', '.yml', '.yaml',
 const secretPatterns = [
   ['OpenAI-style key', /sk-(?:proj-|ant-api03-)?[A-Za-z0-9_]{20,}/g],
   ['GitHub token', /gh[pousr]_[A-Za-z0-9]{20,}/g],
-  ['AWS access key', /AKIA[0-9A-Z]{16}/g],
+  // A real access key is always delimited (quotes, whitespace, `=`); the bare
+  // pattern also fires inside long uppercase runs, which is what embedded
+  // base64/compressed payloads look like. 0.1.5's
+  // dsh-client-ui-sidebar-documentpreview ships exactly such a blob.
+  ['AWS access key', /(?<![A-Za-z0-9+/])AKIA[0-9A-Z]{16}(?![A-Za-z0-9+/])/g],
   ['Google API key', /AIza[0-9A-Za-z_-]{35}/g],
   ['private key material', /-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----\r?\n(?:[A-Za-z0-9+/=]{40,}\r?\n){2,}/g],
 ]

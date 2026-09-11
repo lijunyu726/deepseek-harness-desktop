@@ -2070,29 +2070,19 @@ window.__ModuleLoader__.load({
     }
 
     const WHALE_SPRITE_BASE = '/dsh-desktop/whale-sprites'
-    const DEEPSEEK_MODEL_VISUALS = {
-      'deepseek-v4-flash-vision-exp': { label: 'Vision', family: 'flash' },
-      'deepseek-v4-flash': { label: 'Flash', family: 'flash' },
-      'deepseek-v4-pro': { label: 'V4 Pro', family: 'pro' },
-    }
-    const DEEPSEEK_EFFORT_VISUALS = {
-      flash: {
-        off: { sprite: 'flash-off', duration: 3.0 },
-        low: { sprite: 'flash-high', duration: 2.45 },
-        high: { sprite: 'flash-high', duration: 2.0 },
-        max: { sprite: 'flash-max', duration: 1.7 },
-      },
-      pro: {
-        off: { sprite: 'pro-off', duration: 2.4 },
-        low: { sprite: 'pro-high', duration: 1.95 },
-        high: { sprite: 'pro-high', duration: 1.6 },
-        max: { sprite: 'pro-max', duration: 1.333 },
-      },
-    }
     const WHALE_SPRITES = ['flash-off', 'flash-high', 'flash-max', 'pro-off', 'pro-high', 'pro-max']
 
     function whaleSpriteUrl(sprite) {
       return `${WHALE_SPRITE_BASE}/${sprite}.webp`
+    }
+
+    /**
+     * Display name for one catalog model. Upstream spells the V4.1 slug
+     * "DeepSeek-V41-Flash"; DeepSeek's own docs write "V4.1", so render the
+     * dotted form. Everything else passes through untouched.
+     */
+    function displayModelName(name) {
+      return String(name ?? '').replace(/^DeepSeek-V(\d)(\d+)-/, 'DeepSeek-V$1.$2-')
     }
 
     function ModelRheostat({ sessionId, locked, connection }) {
@@ -2153,38 +2143,13 @@ window.__ModuleLoader__.load({
       }, [])
 
       const stops = react.useMemo(() => {
-        // DeepSeek uses a fixed three-stop MODEL track: Vision Max → Flash
-        // Max → Pro Max. Dragging switches the model (effort pinned to its
-        // max tier); fine-grained effort control lives in the expanded 高级
-        // pane. The default model (deepseek-v4-flash) is the middle stop.
-        if (current?.provider === 'deepseek-official') {
-          const group = (groups ?? []).find((g) => g.id === 'deepseek-official')
-          if (group === undefined) return []
-          const ORDER = ['deepseek-v4-flash-vision-exp', 'deepseek-v4-flash', 'deepseek-v4-pro']
-          const track = []
-          for (const modelId of ORDER) {
-            const model = (group.models ?? []).find((entry) => entry.id === modelId)
-            if (model === undefined) continue
-            const efforts = model.reasoning?.efforts ?? []
-            const maxEffort = efforts.find((e) => e.id === 'max') ?? efforts[efforts.length - 1]
-            if (maxEffort === undefined) continue
-            const modelVisual = DEEPSEEK_MODEL_VISUALS[model.id] ?? { label: model.name ?? model.id, family: 'flash' }
-            const effortVisuals = DEEPSEEK_EFFORT_VISUALS[modelVisual.family] ?? DEEPSEEK_EFFORT_VISUALS.flash
-            const visual = effortVisuals[maxEffort.id] ?? effortVisuals.max
-            if (visual === undefined) continue
-            track.push({
-              provider: group.id,
-              model: model.id,
-              effort: maxEffort.id,
-              modelName: model.name ?? model.id,
-              effortName: maxEffort.name ?? maxEffort.id,
-              modelLabel: modelVisual.label,
-              sprite: visual.sprite,
-              duration: visual.duration,
-            })
-          }
-          return track
-        }
+        // Every provider — DeepSeek included — gets an effort track built from
+        // the CURRENT model's own reasoning ladder. DeepSeek used to have a
+        // fixed three-model stop list (Vision/Flash/Pro), but the V4.1 line
+        // collapsed those into one unified multimodal model, so a model
+        // switcher no longer has anything to switch between; deepseek-v4-pro
+        // additionally routes to V4.1 Flash. Reading the catalog instead of a
+        // hardcoded list also means a future V4.1 Pro appears automatically.
         // Other vendors: adapt the stops to the CURRENT model's own
         // reasoning efforts (whatever the catalog reports).
         if (current === null) return []
@@ -2211,9 +2176,9 @@ window.__ModuleLoader__.load({
             provider: group.id,
             model: model.id,
             effort: effort.id,
-            modelName: model.name ?? model.id,
+            modelName: displayModelName(model.name ?? model.id),
             effortName: effort.name ?? effort.id,
-            modelLabel: model.name ?? model.id,
+            modelLabel: displayModelName(model.name ?? model.id),
             sprite: tier.sprite,
             duration: tier.duration,
           }
@@ -2241,9 +2206,9 @@ window.__ModuleLoader__.load({
 
       const stopIndex = react.useMemo(() => {
         if (stops.length === 0 || current === null) return 0
-        // Exact model+effort match first (third-party effort tracks); the
-        // DeepSeek three-stop track falls back to a model-only match so a
-        // session running e.g. Flash·high still highlights the Flash stop.
+        // Exact model+effort match first, then the model's default effort, then
+        // a model-only match — so a session whose effort differs from the track
+        // still highlights the right model instead of falling back to stop 0.
         let idx = stops.findIndex((s) => s.model === current.model && s.effort === current.reasoningEffort)
         if (idx === -1) {
           const defaultEffort = (groups ?? [])
@@ -2395,7 +2360,7 @@ window.__ModuleLoader__.load({
         return group?.models?.find((m) => m.id === current.model) ?? null
       })()
       const triggerName = noStops
-        ? (currentModel?.name ?? current?.model ?? '模型')
+        ? displayModelName(currentModel?.name ?? current?.model ?? '模型')
         : stop.modelLabel
       const triggerEffort = noStops ? '' : stop.effortName
       const title = noStops
@@ -3349,39 +3314,28 @@ window.__ModuleLoader__.load({
       // --- File / folder upload: inject into the "+" command menu ---
       // The command menu has class _3e4SsG_menu (from dsh-client-ui-input-trigger).
       // Watch for it to appear and inject upload items at the top of its viewport.
-      const _fileInput = document.createElement('input')
-      _fileInput.type = 'file'
-      _fileInput.multiple = true
-      _fileInput.style.display = 'none'
-      document.body.appendChild(_fileInput)
+      // Uploading a regular FILE is left entirely to the runtime: 0.1.5
+      // rebuilt the composer attachment pipeline around background uploads and
+      // receipts, so a plugin that reads the browser bytes itself would be a
+      // second, drifting implementation. The native attach button already owns
+      // a hidden <input type=file multiple>; clicking it reuses that pipeline,
+      // including its progress, cancellation, and cross-session visibility.
+      // Only folders need desktop help — the native picker has no directory
+      // entry point at all (see MIGRATION-0.1.5.md).
+      const NATIVE_ATTACH_SELECTOR = 'button[aria-label="添加附件"], button[aria-label="Add attachment"]'
 
-      function _deliverFiles(files) {
-        if (typeof window.__DSH_ADD_FILES__ === 'function') {
-          window.__DSH_ADD_FILES__(files)
-          return true
+      function _openNativeAttach() {
+        const button = document.querySelector(NATIVE_ATTACH_SELECTOR)
+        if (button === null) {
+          _uploadToast('附件按钮尚未就绪，请稍后重试')
+          return false
         }
-        return false
-      }
-
-      function _triggerFileInput(input) {
-        input.onchange = () => {
-          if (!input.files || input.files.length === 0) return
-          const files = Array.from(input.files)
-          if (_deliverFiles(files)) {
-            input.value = ''
-            return
-          }
-          // The composer may still be mounting: retry for up to ~5s.
-          let attempts = 0
-          const timer = setInterval(() => {
-            attempts += 1
-            if (_deliverFiles(files) || attempts > 20) {
-              clearInterval(timer)
-              input.value = ''
-            }
-          }, 250)
+        if (button.disabled === true) {
+          _uploadToast('当前无法添加附件（会话忙碌或已锁定）')
+          return false
         }
-        input.click()
+        button.click()
+        return true
       }
 
       // Folder upload: Electron main-process native dialog (no TCC
@@ -3408,22 +3362,22 @@ window.__ModuleLoader__.load({
               _uploadToast('该文件夹没有可上传的文件')
               return
             }
-            const folderFile = new File([''], result.name || 'folder', { type: 'application/x-directory' })
-            try {
-              Object.defineProperty(folderFile, '__dshFolderPath', { value: result.path, writable: false })
-              Object.defineProperty(folderFile, '__dshFolderShortPath', { value: result.shortPath ?? result.path, writable: false })
-              Object.defineProperty(folderFile, '__dshFolderStats', { value: { files: result.files ?? 0, totalBytes: result.totalBytes ?? 0 }, writable: false })
-            } catch {
-              /* properties already set: placeholder unusable */
-            }
-            if (!_deliverFiles([folderFile])) {
-              let attempts = 0
-              const timer = setInterval(() => {
-                attempts += 1
-                if (_deliverFiles([folderFile]) || attempts > 20) clearInterval(timer)
-              }, 250)
-            } else if (result.truncated) {
-              _uploadToast('文件夹较大，仅复制了部分内容（上限 2000 个文件 / 总计 200MB）')
+            // The host gateway already copied the folder into the session directory, so it
+            // never enters the composer's attachment pipeline: 0.1.5 rebuilt that
+            // around background upload receipts and has no lane for a directory.
+            // Appending the caption as text is what the chat half renders into a
+            // folder chip (parseFileCaption) once the message is sent.
+            const caption = `📁 文件夹：${result.name || 'folder'} → ${result.shortPath || result.path}`
+            const inputActions = window.__dshInputActions
+            const state = inputActions?.state?.getSnapshot?.()
+            const current = typeof state?.draft === 'string' ? state.draft : ''
+            if (inputActions && typeof inputActions.setDraft === 'function') {
+              inputActions.setDraft(current === '' ? caption : `${current}\n${caption}`)
+              if (result.truncated) {
+                _uploadToast('文件夹较大，仅复制了部分内容（上限 2000 个文件 / 总计 200MB）')
+              }
+            } else {
+              _uploadToast(`文件夹已复制到 ${result.path}，但输入框未就绪，请重试`)
             }
           } catch (err) {
             _uploadToast(`文件夹上传失败：${String(err?.message ?? err)}`)
@@ -3488,7 +3442,7 @@ window.__ModuleLoader__.load({
           })
           return btn
         }
-        menu.appendChild(makeItem('上传文件', _UPLOAD_FILE_ICON, () => _triggerFileInput(_fileInput)))
+        menu.appendChild(makeItem('上传文件', _UPLOAD_FILE_ICON, () => _openNativeAttach()))
         menu.appendChild(makeItem('上传文件夹', _UPLOAD_FOLDER_ICON, () => _triggerFolderUpload()))
         document.body.appendChild(menu)
         _uploadMenuEl = menu

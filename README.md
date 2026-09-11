@@ -6,7 +6,7 @@
 
 在原有基础上加了以下功能：
 
-1、滑动变阻器：点模型芯片弹出鲸鱼滑块，DeepSeek 是固定三档模型轨道 `Vision Max → Flash Max → Pro Max`（Vision 复用 Flash 动画、界面明确显示 Vision；Flash 为默认模型居中间档），拖或点轨道即切换模型并固定 Max 强度；思考强度的精细调节（Off/Low/High/Max）在「高级 > 思考强度」中完成，新增模型不会把轨道拉成长串。
+1、滑动变阻器：点模型芯片弹出鲸鱼滑块，轨道刻度来自**当前模型自己上报的思考档位**（所有供应商一致，含 DeepSeek），拖或点即 `selectModel` 并固定该档强度；供应商/模型/思考强度的精细调节在「高级」面板中完成。**v1.5.0 起 DeepSeek 不再有固定三档模型轨道**（原 `Vision Max → Flash Max → Pro Max`）：V4.1 线把 Vision/Flash 合并为 `deepseek-flash` 一个原生多模态模型，`deepseek-v4-pro` 也自 2026-09-14 12:00（北京时间）起路由到它，三档会指向同一个模型。
 
 2、余额跳转：右上角余额徽章可点击，每完成一次任务刷新，直达 DeepSeek 开放平台充值页。
 
@@ -28,7 +28,7 @@
 - DSH 数据沿用 `~/.dsh`：你在终端里配好的模型、会话、预设原样可用；
 - 设置面板新增「全局约束规则」分类（设置 → 全局约束规则）：文本框直接读写 dsh 原生注入每个会话的 `$DSH_HOME/AGENTS.md`（默认 `~/.dsh/AGENTS.md`），打开即载入现有内容，保存后新会话生效。实现为一个随应用打包的双面插件（`packages/dsh-desktop`：宿主 Typert 远程服务 + 客户端设置分类），通过 `--patch`（`assets/desktop.patch.yml` 的 insert 形式）挂载，并在启动时链接进 profile 的模块回退目录。
 另：桌面端会话页右上角的余额徽章现在可以直接点击，一键跳转 DeepSeek 开放平台充值页（platform.deepseek.com/top_up），刷新按钮不受影响；徽章样式与「Session log」按钮完全一致（透明底、细白描边胶囊）。
-- 输入区的模型选择器默认保持系统原生样式（只显示模型与推理档位）；**点击芯片**才弹出鲸鱼思考强度变阻器。DeepSeek 供应商下轨道是固定三档模型选择：`Vision Max → Flash Max → Pro Max`——`DeepSeek-V4-Flash-Vision-Exp` 与普通 Flash 共用轻快鲸鱼动画（界面明确显示 Vision），Pro 使用更有力量的图集；当前模型档位高亮（即使会话内 effort 不是 Max 也高亮所属模型档），拖或点轨道直接 `selectModel` 切换模型并固定 Max。effort 精细调节（Off/Low/High/Max）在「高级 > 思考强度」子页完成。**鲸鱼就是滑块拇指**：游在轨道里、位置就是当前档位，按住鲸鱼拖动或点击轨道空白处即可切换。换成其他厂商模型时仍按当前模型的实际 effort 档位生成刻度；无档位模型只显示芯片并提示不支持调节。点击外部或 Esc 收起，动画遵循系统“减少动态效果”设置；桌面与手机端使用同一组本地同源素材。
+- 输入区的模型选择器默认保持系统原生样式（只显示模型与推理档位）；**点击芯片**才弹出鲸鱼思考强度变阻器。轨道由当前模型目录里的 `reasoning.efforts` 现读生成（**不再硬编码任何模型 id**），拖动/点击即 `selectModel` + 固定该档 effort；当前档位高亮。effort 精细调节（Off/Low/High/Max）在「高级 > 思考强度」子页完成。**v1.5.0 起 DeepSeek 与其它供应商走同一条 effort 轨**：原来的固定三档模型轨道在 V4.1 合并模型后已无意义。**鲸鱼就是滑块拇指**：游在轨道里、位置就是当前档位，按住鲸鱼拖动或点击轨道空白处即可切换。换成其他厂商模型时仍按当前模型的实际 effort 档位生成刻度；无档位模型只显示芯片并提示不支持调节。点击外部或 Esc 收起，动画遵循系统“减少动态效果”设置；桌面与手机端使用同一组本地同源素材。
 - 输入框支持 `@会话` 提及：输入 `@` 弹出触发菜单（「会话」组，按标题 / 会话 id / 工作目录过滤），选中后插入以会话标题为标签的 chip；发送时 chip 序列化为规范的 `@[标题](dsh-session:<base64url id>)` 提及，宿主在 `agent/pre-step` 边界识别提及，并把被引用会话的当前上下文快照作为只读 recall 上下文注入本轮——与斜杠调用 Skill 同一条管线，复用 rc.2 的 `session-reference` 与会话查询服务。
 - 会话页左缘（抽屉右侧）提供「历史 Prompt 时间轴」：一条 Prompt 对应一根左端对齐的 6×1px 细横线，8px 节距，时间从上向下推进（最新在最下）。鼠标移动时，邻近横线只沿水平方向按像素距离形成高斯鱼眼，最接近光标的横线约伸长至 26px，线条始终保持 1px 粗；右侧气泡不显示标题、日期、序号、箭头或描边，只显示最多四行 Prompt 正文并与当前横线垂直居中。点击横线会定位到会话中的原始用户消息，**不会再填充输入框**；目标尚未进入当前历史窗口时会自动逐页加载，找到后居中滚动。聊天上滑接近顶部会自动加载更早消息，顶部不再显示需要反复点击的「加载更早」按钮。宿主只在根 agent 的 `agent/pre-step` 接受边界记录真实用户 Prompt，最多保留 100 条、相同文本自动去重；历史保存在 `$DSH_HOME/desktop/prompt-history.json`（权限 600），桌面和手机端共享，不进入仓库或安装包。v1.3.2 起每条记录带会话归属，时间轴**只显示当前会话**的 Prompt；v1.4.2 起新记录同时保存稳定消息 ID，旧记录用同文本与最接近时间兼容定位。
 - 发送图片：会话里**以图片本体显示**（桌面端走官方附件插槽，手机端 `/mobile` 同样渲染），多张图片全部保留。选择 `DeepSeek-V4-Flash-Vision-Exp` 时，rc.2 运行时自动预处理尺寸/格式，优先通过 DeepSeek Files API 上传和复用，上传失败或超时则用相同请求图片回退为内联 base64；普通 Flash/Pro 属于文本模型，发送前会明确提示不支持图片。旧版 vision MCP 委派不再位于发送主链路。
@@ -55,10 +55,10 @@
 | `main/menu.mjs` / `main/tray.mjs` | macOS 菜单栏与托盘 |
 | `assets/splash.html` | 启动动画（自包含单文件，无外部资源） |
 | `assets/desktop.patch.yml` | 桌面壳补丁层（insert 形式挂载全局约束规则插件行） |
-| `patches/` | rc.2 上游包整文件补丁（conversation / apiproxy）；workspace 与 web-frontend 使用官方实现 |
+| `patches/` | 上游包整文件补丁（4 个，表驱动映射见 `scripts/apply-upload-enhancements.mjs`）；`superseded-0.1.1/` 只作参考 |
 | `packages/dsh-desktop/` | 双面插件：宿主 `globalInstructions` 远程服务、历史 Prompt、鲸鱼序列帧同源路由、客户端设置分类与变阻器、`@会话` 提及、`/mobile` 手机端页面；`lib/whale-sprites/` 存放六套 6×4 无损 WebP 图集 |
 | `scripts/build-icon.mjs` | 用官方鲸鱼 logo 生成应用图标与托盘图标 |
-| `scripts/check-rc2-runtime.mjs` | 校验官方 rc.2、原生 Vision Files API 与 Persistent Bash 快速路径 |
+| `scripts/check-runtime.mjs` | 校验官方运行时版本钉、`deepseek-flash` 原生 text+image 目录、attachment 接缝的 `imageHostPath`、已删包缺席与 Persistent Bash 快速路径 |
 | `electron-builder.yml` | 打包配置（dmg + zip，arm64） |
 
 ## 开发
@@ -94,11 +94,11 @@ npm run dev          # 以开发模式启动（服务直接跑在 electron 的 n
 ## 从新克隆构建
 
 ```bash
-npm install                                   # 恢复官方 rc.2 依赖（按锁文件）
+npm install                                   # 恢复官方 0.1.5-rc.2 依赖（按锁文件）
 npm run dist                                  # 打包
 ```
 
-> 本项目是独立 Git 仓库（私有 GitHub：lijunyu726/deepseek-harness-desktop），直接消费官方 npm rc.2；构建和运行不依赖维护者机器上的 DSH 大仓或绝对项目路径。
+> 本项目是独立 Git 仓库（私有 GitHub：lijunyu726/deepseek-harness-desktop），直接消费官方 npm 包（当前 `0.1.5-rc.2`）；构建和运行不依赖维护者机器上的 DSH 大仓或绝对项目路径。
 
 ## 打包
 
@@ -133,17 +133,17 @@ Electron 打包采用运行时白名单，只包含 `main/`、`assets/`、`packa
 
 ## Persistent Bash 命令提速修复
 
-当前桌面端直接使用官方 DSH `0.1.1-rc.2`，不再向依赖树回植旧补丁。官方运行时本身已经在 `dsh-terminal-bash` 的 `PROMPT_COMMAND` 中重设受控 `PS1`，持久 Bash 工具初始化只关闭 echo，并以 `stdin_read` 信号快速结算。`npm run upstream:check` / `npm run bash:check` 会同时核对协议两侧；`npm run benchmark:bash` 则直接加载打包 `.app` 内的模块做真实 PTY 回归，避免把静态标记误当成实际性能。
+当前桌面端直接使用官方 DSH `0.1.5-rc.2`，不再向依赖树回植旧补丁。官方运行时本身已经在 `dsh-terminal-bash` 的 `PROMPT_COMMAND` 中重设受控 `PS1`，持久 Bash 工具初始化只关闭 echo，并以 `stdin_read` 信号快速结算。`npm run upstream:check` / `npm run bash:check` 会同时核对协议两侧；`npm run benchmark:bash` 则直接加载打包 `.app` 内的模块做真实 PTY 回归，避免把静态标记误当成实际性能。
 
 ## DeepSeek rc.2 原生多模态 + 看图 MCP 委派
 
-官方 rc.2 默认公布 `deepseek-v4-flash`、`deepseek-v4-pro` 和 `deepseek-v4-flash-vision-exp`。只有 Vision 型号声明 `inputModalities: [text, image]`；普通 Flash/Pro 保持文本输入。
+官方 0.1.5 默认公布 `deepseek-flash`（DeepSeek-V4.1-Flash，`inputModalities: [text, image]`，原生多模态）以及三个兼容项 `deepseek-v4-flash` / `deepseek-v4-pro` / `deepseek-v4-flash-vision-exp`。三个旧模型名在服务端已全部路由到 V4.1-Flash；`deepseek-v4-pro` 自北京时间 2026-09-14 12:00 起同样路由。**因此默认模型本身就支持读图，旧的看图 MCP 委派只对真正纯文本的模型（如其它供应商）生效。** 注意：设置文档里的 `llm-deepseek.models` 分节会整体替换这份内置目录，省略 `inputModalities` 即按纯文本——写它会丢掉原生读图。
 
 **Vision 模型**：图片沿官方链路处理——附件内容寻址落盘，按模型预算自动缩放和选择 PNG/WebP/JPEG 编码，优先 `POST /files` 并缓存可复用 `file_id`；文件解析失败或超时时，用相同派生图片重建整次请求并回退内联 base64，不在同一请求混用两种表示。
 
 **文本模型**：拖入图片后由桌面补丁自动委派给「看图 MCP」——图片先落盘到本地附件库，消息保留图片块（聊天内正常显示）并附加一段桥接说明，模型请求边界剥离图片字节，模型调用 `mcp__vision__describe_image` 读取本地路径后把描述作为工具结果用于回答。委派只在模型确实不支持图片输入时启用；能看图的模型永远走原生多模态路径。
 
-`scripts/check-rc2-runtime.mjs` 会核对官方版本、Vision 模型、Files API 和 Bash 快速路径，最终 `.app` 也在 Release 审计阶段复测。依赖版本或结构漂移会直接阻止打包，不能通过编辑 `.app` 内文件绕过。
+`scripts/check-runtime.mjs` 会核对官方版本钉、`deepseek-flash` 的多模态目录、attachment 接缝能力与 Bash 快速路径，最终 `.app` 也在 Release 审计阶段复测。依赖版本或结构漂移会直接阻止打包，不能通过编辑 `.app` 内文件绕过。
 
 设置中的 `vision` MCP 管理保留，供 Agent 主动读取任意本地图片路径，也是文本模型拖放图片的委派目标；其 API Key 不会进入仓库或安装包。
 

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
-const sourceConversation = path.join(root, 'patches', 'conversation-client.js')
+const sourceConversation = path.join(root, 'patches', 'chat-client.js')
 const sourcePlugin = path.join(root, 'packages', 'dsh-desktop', 'lib', 'client.js')
 
 function fail(message) {
@@ -43,9 +43,12 @@ function validate(label, conversation, plugin) {
     conversation.includes('const messageText = contentParts(data.content).text;'),
     `${label}: message text is not derived from the durable message content`,
   )
+  // The plugin renders the edit entry point itself, so the renderer has no
+  // action button handing text to onEdit any more: it only has to swap the
+  // bubble for a textarea while the plugin's edit state targets this row.
   assert(
-    conversation.includes('editState.onEdit(messageText);'),
-    `${label}: edit action is not handed the current message text`,
+    conversation.includes('editState.editing !== null && editState.editing.key === node.key'),
+    `${label}: the in-place editor does not follow the plugin's editing state`,
   )
   assert(
     !conversation.includes('editState.onEdit(text);'),
@@ -76,11 +79,11 @@ const sourcePluginText = read(sourcePlugin)
 validate('sources', sourceConversationText, sourcePluginText)
 
 if (args.includes('--installed')) {
-  const installedConversation = path.join(root, 'node_modules', '@deepseek-ai', 'dsh-client-ui-conversation', 'lib', 'client.js')
+  const installedConversation = path.join(root, 'node_modules', '@deepseek-ai', 'dsh-client-ui-chat', 'lib', 'client.js')
   const installedPlugin = path.join(root, 'node_modules', '@deepseek-ai', 'dsh-desktop', 'lib', 'client.js')
   const installedConversationText = read(installedConversation)
   const installedPluginText = read(installedPlugin)
-  assert(canonicalBuildPaths(installedConversationText) === canonicalBuildPaths(sourceConversationText), 'installed conversation bundle differs from patches/conversation-client.js')
+  assert(canonicalBuildPaths(installedConversationText) === canonicalBuildPaths(sourceConversationText), 'installed chat bundle differs from patches/chat-client.js')
   assert(installedPluginText === sourcePluginText, 'installed desktop plugin differs from packages/dsh-desktop/lib/client.js')
   validate('installed runtime', installedConversationText, installedPluginText)
 }
@@ -90,7 +93,7 @@ if (appFlag >= 0) {
   const appDir = args[appFlag + 1]
   if (!appDir) fail('--app requires a .app directory path')
   const appRoot = path.join(path.resolve(appDir), 'Contents', 'Resources', 'app', 'node_modules', '@deepseek-ai')
-  const appConversationText = read(path.join(appRoot, 'dsh-client-ui-conversation', 'lib', 'client.js'))
+  const appConversationText = read(path.join(appRoot, 'dsh-client-ui-chat', 'lib', 'client.js'))
   const appPluginText = read(path.join(appRoot, 'dsh-desktop', 'lib', 'client.js'))
   assert(canonicalBuildPaths(appConversationText) === canonicalBuildPaths(sourceConversationText), 'packaged conversation bundle differs from source patch')
   assert(appPluginText === sourcePluginText, 'packaged desktop plugin differs from source package')

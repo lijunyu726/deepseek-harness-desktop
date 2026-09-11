@@ -1,10 +1,13 @@
 import { Service } from "@deepseek-ai/cordis";
 import { randomUUID } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
-import { Inbox, agentEvents, assembleContextFor, emitAgentEvent } from "@deepseek-ai/dsh-agent";
-import { BlockAssembler, LlmError, assertNever, createAssistantMessage, createToolResultMessage, createUserMessage, deepFreeze, errorChain, markAgentLoopRequest } from "@deepseek-ai/dsh-llm";
-import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
-import { SessionId, SessionPreparation, canonicalHeader, headerEquals, isReplacementSurfaceEvent } from "@deepseek-ai/dsh-session";
+import { z as z$1 } from "zod";
+import { brandString } from "@deepseek-ai/dsh-brand";
+import { agentEvents, assembleContextFor, emitAgentEvent } from "@deepseek-ai/dsh-agent";
+import { AssistantStreamAccumulator, BlockAssembler, LlmAttemptId, LlmError, createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage, errorChain, markAgentLoopRequest } from "@deepseek-ai/dsh-llm";
+import { SessionLogOffset, SessionPreparation, SessionSeq, canonicalHeader, headerEquals, interruptedTurnClosers, isReplacementSurfaceEvent } from "@deepseek-ai/dsh-session";
+import { SessionPersistenceNotFoundError } from "@deepseek-ai/dsh-session-persistence";
+import { assertNever, deepFreeze } from "@deepseek-ai/dsh-util-values";
 import { createScope } from "@deepseek-ai/dsh-scope";
 import { joinContextSections, renderContextSections, renderPrompt } from "@deepseek-ai/dsh-system-prompt";
 import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER } from "@deepseek-ai/dsh-tools";
@@ -23,9 +26,210 @@ function stripDelegatedImages(messages) {
 	}
 	return changed ? out : messages;
 }
+//#region lib/types/inbox.js
+/**
+* Driver-owned durable agent inbox projection and command facade.
+*
+* @module @deepseek-ai/dsh-agent-loop/inbox
+*/
+/** Wire validation for pending agent input reconstructed from durable inbox splices. */
+const inboxProjectionSchema = z$1.object({
+	"next-turn": z$1.array(z$1.custom()).readonly(),
+	"next-step": z$1.array(z$1.custom()).readonly()
+}).readonly();
+/** Standard fold that reconstructs pending input and rejects invalid durable splice history. */
+const inboxProjectionDefinition = {
+	key: "inbox",
+	stateSchema: inboxProjectionSchema,
+	init: () => ({
+		"next-turn": [],
+		"next-step": []
+	}),
+	apply(state, event) {
+		if (event.type !== "agent/inbox/spliced") return state;
+		const splice = event.data;
+		try {
+			const inbox = state[splice.target];
+			const removedCount = splice.removedCount ?? 0;
+			if (!Number.isSafeInteger(splice.start) || splice.start < 0 || splice.start > inbox.length || !Number.isSafeInteger(removedCount) || removedCount < 0 || splice.start + removedCount > inbox.length) throw new Error("invalid inbox splice");
+			const next = inbox.toSpliced(splice.start, removedCount, ...splice.inserted);
+			const ids = /* @__PURE__ */ new Set();
+			for (const message of splice.target === "next-turn" ? [...next, ...state["next-step"]] : [...state["next-turn"], ...next]) {
+				if (ids.has(message.id)) throw new Error(`message "${message.id}" is already pending`);
+				ids.add(message.id);
+			}
+			return splice.target === "next-turn" ? {
+				"next-turn": next,
+				"next-step": state["next-step"]
+			} : {
+				"next-turn": state["next-turn"],
+				"next-step": next
+			};
+		} catch (error) {
+			throw new Error(`invalid persisted inbox splice at session seq ${event.seq}`, { cause: error });
+		}
+	},
+	wire: {
+		viewSchema: inboxProjectionSchema,
+		view: (state) => state
+	},
+	stateVersion: 1
+};
+/**
+* Driver-owned durable Inbox implementation used by ReactLoopAgent and focused
+* provider tests.
+* @param projections - registry that owns the standard Inbox projection.
+* @param session - session whose durable events store pending input.
+* @param dispatch - agent-scoped notifications for Inbox lifecycle events.
+*/
+var ReactLoopInbox = class {
+	projections;
+	session;
+	dispatch;
+	constructor(projections, session, dispatch) {
+		this.projections = projections;
+		this.session = session;
+		this.dispatch = dispatch;
+		this.projections.register(inboxProjectionDefinition);
+	}
+	/** Prompts awaiting individual turns. */
+	get nextTurn() {
+		return this.current()["next-turn"];
+	}
+	/** Input awaiting the next step boundary. */
+	get nextStep() {
+		return this.current()["next-step"];
+	}
+	/** Whether either pending-message list contains work. */
+	get hasPending() {
+		const state = this.current();
+		return state["next-turn"].length > 0 || state["next-step"].length > 0;
+	}
+	/** Durably cancel all pending input, clearing next-step before next-turn. */
+	clear() {
+		this.splice("next-step", 0, this.nextStep.length, []);
+		this.splice("next-turn", 0, this.nextTurn.length, []);
+	}
+	/**
+	* Remove and return the complete batch proposed for one step.
+	* @param target - whether this boundary also consumes one queued turn.
+	* @param turn - turn that will own the claimed batch.
+	* @returns next-step input followed by the queued turn, when requested.
+	*/
+	claim(target, turn) {
+		const claimed = this.mutate("next-step", 0, this.nextStep.length, [], false);
+		if (target === "next-turn") claimed.push(...this.mutate("next-turn", 0, 1, [], false));
+		for (const message of claimed) this.dispatch.emit("agent/inbox/claimed", {
+			message,
+			turn
+		});
+		return claimed;
+	}
+	/**
+	* Append one message to a pending list.
+	* @param target - pending list to extend.
+	* @param message - message to append.
+	*/
+	append(target, message) {
+		this.splice(target, this.current()[target].length, 0, [message]);
+	}
+	/**
+	* Prepend one message to a pending list.
+	* @param target - pending list to extend.
+	* @param message - message to prepend.
+	*/
+	prepend(target, message) {
+		this.splice(target, 0, 0, [message]);
+	}
+	/**
+	* Replace one pending message in place.
+	* @param messageId - identity of the pending message to replace.
+	* @param newMessage - replacement message.
+	* @returns whether the message was still pending.
+	*/
+	replace(messageId, newMessage) {
+		const location = this.locate(messageId);
+		if (location === void 0) return false;
+		this.splice(location.target, location.index, 1, [newMessage]);
+		return true;
+	}
+	/**
+	* Remove one pending message.
+	* @param messageId - identity of the pending message to remove.
+	* @returns whether the message was still pending.
+	*/
+	remove(messageId) {
+		const location = this.locate(messageId);
+		if (location === void 0) return false;
+		this.splice(location.target, location.index, 1, []);
+		return true;
+	}
+	/**
+	* Apply standard splice semantics and durably record the normalized result.
+	* @param target - pending list to mutate.
+	* @param start - splice position.
+	* @param deleteCount - maximum number of messages to remove.
+	* @param inserted - messages to insert at the resolved position.
+	* @returns messages removed by the splice.
+	*/
+	splice(target, start, deleteCount, inserted) {
+		return this.mutate(target, start, deleteCount, inserted, true);
+	}
+	/** Locate one pending identity across both owned lists. */
+	locate(messageId) {
+		const state = this.current();
+		for (const target of ["next-turn", "next-step"]) {
+			const index = state[target].findIndex((message) => message.id === messageId);
+			if (index >= 0) return {
+				target,
+				index
+			};
+		}
+	}
+	/** Read the current durable projection state. */
+	current() {
+		const state = this.projections.stateOf(this.session, "inbox");
+		/* v8 ignore next -- the constructor registers this key before any read */
+		if (state === void 0) throw new Error(`agent "${this.session.id}" cannot read inbox state: its projection registration is not active`);
+		return state;
+	}
+	/** Commit one normalized mutation and publish its live events. */
+	mutate(target, start, deleteCount, inserted, discardRemoved) {
+		const state = this.current();
+		const inbox = state[target];
+		const truncatedStart = Math.trunc(start);
+		const offset = Number.isNaN(truncatedStart) ? 0 : truncatedStart;
+		const actualStart = offset < 0 ? Math.max(inbox.length + offset, 0) : Math.min(offset, inbox.length);
+		const truncatedDeleteCount = Math.trunc(deleteCount);
+		const actualDeleteCount = Math.min(Math.max(Number.isNaN(truncatedDeleteCount) ? 0 : truncatedDeleteCount, 0), inbox.length - actualStart);
+		if (actualDeleteCount === 0 && inserted.length === 0) return [];
+		const candidate = inbox.toSpliced(actualStart, actualDeleteCount, ...inserted);
+		const ids = /* @__PURE__ */ new Set();
+		for (const message of target === "next-turn" ? [...candidate, ...state["next-step"]] : [...state["next-turn"], ...candidate]) {
+			if (ids.has(message.id)) throw new Error(`message "${message.id}" is already pending`);
+			ids.add(message.id);
+		}
+		const outcome = discardRemoved && actualDeleteCount > 0 ? "canceled" : void 0;
+		const splice = {
+			target,
+			start: actualStart,
+			...actualDeleteCount === 0 ? {} : { removedCount: actualDeleteCount },
+			inserted,
+			...outcome === void 0 ? {} : { outcome }
+		};
+		const removed = inbox.slice(actualStart, actualStart + actualDeleteCount);
+		const event = this.session.append("agent/inbox/spliced", splice);
+		if (discardRemoved) for (const message of removed) this.dispatch.emit("agent/inbox/discarded", { message });
+		for (const message of event.data.inserted) this.dispatch.emit("agent/inbox/inserted", { message });
+		return removed;
+	}
+};
+//#endregion
 //#region lib/types/runtime-context.js
 /**
-* Durable projection state for dynamic runtime context.
+* Durable projection state for the two loop-owned surface messages the system
+* prompt plugin forms: the system prompt (surface node 0 and any in-history
+* replacement) and the dynamic runtime-context snapshot.
 * @module @deepseek-ai/dsh-agent-loop/runtime-context
 */
 const SOURCE = "@deepseek-ai/dsh-system-prompt";
@@ -37,6 +241,76 @@ function textOf(message) {
 	const [block] = message.content;
 	return message.content.length === 1 && block?.type === "text" ? block.text : void 0;
 }
+/** Committed events from the newest backward; the restore scans stop at the first match. */
+function eventsNewestFirst(session) {
+	return session.snapshotEvents().toReversed();
+}
+/**
+* Decides how a rendered system prompt reaches the surface without owning the
+* commit. The first prompt, even empty, reserves surface node 0.
+* A capable continuing series appends changed nonempty text after the
+* cached history. An incapable route, broken series, or cleared prompt instead
+* normalizes the first system node and empties later active nodes. Dormant empty
+* tails do not supply effective text or require repeated replacements.
+*/
+var SystemPromptProjection = class {
+	session;
+	constructor(session) {
+		this.session = session;
+	}
+	/** The surviving `system/message` nodes in surface order. */
+	systemNodes() {
+		const nodes = [];
+		for (const seq of this.session.surface.nodes) {
+			const event = this.session.eventAt(seq);
+			if (event?.type !== "system/message") continue;
+			const text = event.data.message.content.length === 0 ? "" : textOf(event.data.message);
+			nodes.push({
+				seq,
+				text
+			});
+		}
+		return nodes;
+	}
+	/**
+	* Reconcile effective text and retained nodes with the prepared route and series.
+	* @param rendered - the fully rendered system prompt; `''` when none is active.
+	* @param input - the route capability and series facts for this step.
+	* @returns ordered per-node updates; an empty list means no update is needed.
+	*/
+	project(rendered, input) {
+		const nodes = this.systemNodes();
+		const head = nodes[0];
+		if (head === void 0) return [{
+			message: createSystemMessage(rendered, SOURCE),
+			intent: { surfaceOp: "append" }
+		}];
+		const latest = nodes.findLast((node) => node.text !== "") ?? head;
+		if (!input.inHistory || input.startsSeries || rendered.length === 0) {
+			const updates = nodes.slice(1).filter((node) => node.text !== "").map((node) => this.replace(node.seq, ""));
+			if (head.text !== rendered) updates.push(this.replace(head.seq, rendered));
+			return updates;
+		}
+		if (latest.text === rendered) return [];
+		return [{
+			message: createSystemMessage(rendered, SOURCE),
+			intent: { surfaceOp: "append" }
+		}];
+	}
+	replace(seq, text) {
+		return {
+			message: createSystemMessage(text, SOURCE),
+			intent: {
+				surfaceOp: {
+					op: "replace",
+					startSeq: seq,
+					endSeq: seq
+				},
+				sourceEventSeqs: [seq]
+			}
+		};
+	}
+};
 /** Tracks the last retained runtime-context snapshot without owning its commit. */
 var RuntimeContextProjection = class {
 	/** `undefined` means no snapshot ever existed; `null` means none is retained. */
@@ -48,9 +322,8 @@ var RuntimeContextProjection = class {
 	*/
 	constructor(ctx, session) {
 		const surface = new Set(session.surface.nodes);
-		for (let index = session.events.length - 1; index >= 0; index -= 1) {
-			const event = session.events[index];
-			if (event?.type !== "user/message" || !isOwned(event.data)) continue;
+		for (const event of eventsNewestFirst(session)) {
+			if (event.type !== "user/message" || !isOwned(event.data)) continue;
 			this.retained ??= null;
 			if (surface.has(event.seq)) {
 				this.retained = {
@@ -94,6 +367,128 @@ var RuntimeContextProjection = class {
 				sections
 			}
 		});
+	}
+};
+//#endregion
+//#region lib/types/assistant-stream.js
+/** Process-local assistant attempt framing and durable stream accumulation. */
+/** Folds one model attempt into one compact stream plus ordered transient frames. */
+var AssistantStreamAttempt = class {
+	nextRevision;
+	turn;
+	step;
+	emit;
+	accumulator = new AssistantStreamAccumulator();
+	assembler = new BlockAssembler();
+	index = 0;
+	terminal = false;
+	/** Attempt identity unique within this Agent lifecycle. */
+	attemptId;
+	/** Whether this started attempt has emitted its terminal frame. */
+	get ended() {
+		return this.terminal;
+	}
+	/**
+	* @param sessionId - identity embedded only in the Agent-lifecycle-local attempt id.
+	* @param attempt - attached-Session-local attempt counter.
+	* @param nextRevision - allocates the next emitted frame revision.
+	* @param turn - durable turn owning the request.
+	* @param step - durable step owning the request.
+	* @param emit - agent-scoped notification publisher.
+	*/
+	constructor(sessionId, attempt, nextRevision, turn, step, emit) {
+		this.nextRevision = nextRevision;
+		this.turn = turn;
+		this.step = step;
+		this.emit = emit;
+		this.attemptId = LlmAttemptId(`${sessionId}:${attempt}`);
+	}
+	/** Publish the opening marker before the first delivered chunk. */
+	start() {
+		this.emit({
+			type: "start",
+			attemptId: this.attemptId,
+			revision: this.nextRevision(),
+			turn: this.turn,
+			step: this.step
+		});
+	}
+	/** Snapshot one chunk once, then feed durable compaction, assembly, and live publication. */
+	push(chunk) {
+		const timed = this.accumulator.push({
+			time: Date.now(),
+			chunk
+		});
+		this.assembler.push(timed.chunk);
+		this.emit({
+			type: "chunk",
+			attemptId: this.attemptId,
+			revision: this.nextRevision(),
+			index: this.index++,
+			time: timed.time,
+			chunk: timed.chunk
+		});
+	}
+	/**
+	* Publish terminal settlement after the matching durable event commits.
+	* @param eventType - durable settlement type.
+	* @param append - synchronous durable append returning its committed seq.
+	*/
+	settle(eventType, append) {
+		let seq;
+		try {
+			seq = append();
+		} catch (error) {
+			this.abandon();
+			throw error;
+		}
+		this.terminal = true;
+		this.emit({
+			type: "end",
+			attemptId: this.attemptId,
+			revision: this.nextRevision(),
+			index: this.index,
+			outcome: {
+				kind: "committed",
+				eventType,
+				seq
+			}
+		});
+	}
+	/** Publish abandonment when no durable attempt event can be committed. */
+	abandon() {
+		this.terminal = true;
+		this.emit({
+			type: "end",
+			attemptId: this.attemptId,
+			revision: this.nextRevision(),
+			index: this.index,
+			outcome: { kind: "abandoned" }
+		});
+	}
+	/** Exact compact stream for the final durable event. */
+	get stream() {
+		return [...this.accumulator.snapshot()];
+	}
+	/** Canonical completed-message blocks from the same chunks. */
+	blocks() {
+		return this.assembler.blocks();
+	}
+	/** Safe visible prefix when cancellation interrupts the attempt. */
+	interruptedBlocks() {
+		return this.assembler.interruptedBlocks();
+	}
+	/** Latest adapter-reported usage in the stream. */
+	get usage() {
+		return this.assembler.usage;
+	}
+	/** Terminal reason, defaulting to stop when the stream omitted one. */
+	get finish() {
+		return this.assembler.finish;
+	}
+	/** Replay state carried by the terminal finish record. */
+	get replayState() {
+		return this.assembler.replayState;
 	}
 };
 //#endregion
@@ -178,7 +573,7 @@ async function runGroup(ctx, turn, step, group, mode, signal, acceptContext) {
 	const { session } = ctx.agents.requireInitiator();
 	const { maxParallelToolCalls } = ctx.agentLoop.config;
 	const slots = group.map(() => void 0);
-	const callSeqs = group.map(() => -1);
+	const callSeqs = group.map(() => void 0);
 	let nextToStart = 0;
 	let committed = 0;
 	let started = 0;
@@ -362,35 +757,33 @@ var ReactLoopAgent = class {
 	dispatch;
 	/** Whether this loop instance has appended its initial/resume request anchor. */
 	requestHeaderLogged = false;
+	/** Surface generation at attachment or the preceding built request. */
+	requestSurfaceGeneration;
 	runtimeContext;
+	/** Process-local revision of assistant frames for this attached Session. */
+	assistantStreamRevision = 0;
+	assistantAttemptCounter = 0;
+	systemPrompt;
+	/** Identities fully frozen by this loop; weak references do not retain replaced history. */
+	frozenMessages = /* @__PURE__ */ new WeakSet();
 	constructor(loopCtx, id, options, session) {
 		this.loopCtx = loopCtx;
 		this.id = id;
 		this.options = options;
 		this.session = session;
+		this.requestSurfaceGeneration = session.surface.replaceGeneration;
 		this.dispatch = agentEvents(loopCtx, this);
-		this.inbox = new Inbox(session, {
-			inserted: (message) => {
-				this.dispatch.emit("agent/inbox/inserted", { message });
-			},
-			discarded: (message) => {
-				this.dispatch.emit("agent/inbox/discarded", { message });
-			},
-			claimed: (message, turn) => {
-				this.dispatch.emit("agent/inbox/claimed", {
-					message,
-					turn
-				});
-			}
-		});
-		const lastTurn = session.events.findLast((event) => event.type === "turn/start")?.data.turn ?? 0;
+		this.scope = createScope(loopCtx, this);
+		this.ctx = this.scope.ctx;
+		this.inbox = new ReactLoopInbox(this.ctx.sessionProjections, session, this.dispatch);
+		/* v8 ignore next -- the loop registers its own turnBoundary unit, so the key is always present */
+		const lastTurn = this.loopCtx.sessionProjections.stateOf(session, "turnBoundary")?.lastTurn ?? 0;
 		this.phase = {
 			kind: "idle",
 			lastTurn
 		};
-		this.scope = createScope(loopCtx, this);
-		this.ctx = this.scope.ctx.extend({ agent: this });
 		this.runtimeContext = new RuntimeContextProjection(this.ctx, session);
+		this.systemPrompt = new SystemPromptProjection(session);
 	}
 	get status() {
 		return this.phase.kind === "idle" || this.phase.kind === "maintenance" ? "idle" : "running";
@@ -522,10 +915,20 @@ var ReactLoopAgent = class {
 			messages: context === void 0 ? claimed : [...claimed, context]
 		}));
 		signal.throwIfAborted();
-		return decision.kind === "reject" ? decision : {
+		if (decision.kind === "reject") return decision;
+		return {
 			...decision,
 			assembly
 		};
+	}
+	/** Whether the assembled tool schemas differ from the logged request header's. */
+	toolsChanged(tools) {
+		const baseline = this.session.requestHeader();
+		if (baseline === void 0) return false;
+		return !headerEquals(baseline, canonicalHeader({
+			...baseline,
+			tools: [...tools]
+		}));
 	}
 	/** Open one turn before claiming its first proposed step. */
 	async turn() {
@@ -566,8 +969,7 @@ var ReactLoopAgent = class {
 				});
 				phase.step = step;
 				try {
-					for (const message of decision.messages) this.session.append("user/message", message, { surfaceOp: "append" });
-					const stepEnd = await this.step(decision.assembly);
+					const stepEnd = await this.step(decision);
 					if (turnEnds === null || turnEnds.kind !== "max-tokens") turnEnds = stepEnd;
 				} finally {
 					this.session.append("step/end", {
@@ -618,94 +1020,126 @@ var ReactLoopAgent = class {
 		phase.step = 0;
 		return true;
 	}
-	async step(assembly) {
+	async step(decision) {
 		/* v8 ignore next -- private callers establish the running phase before executing a step */
 		if (this.phase.kind !== "running") throw new Error(`agent "${this.id}": step outside running phase`);
 		const { turn, step, abort: { signal } } = this.phase;
 		signal.throwIfAborted();
-		const system = renderPrompt(assembly);
+		const { assembly } = decision;
+		const renderedPrompt = renderPrompt(assembly);
+		let firstAttempt = true;
 		while (true) {
-			const { request, preparedCall } = await this.buildRequest(turn, step, assembly.tools, system, this.session.deriveMessages(), signal);
-			const assembler = new BlockAssembler();
-			const chunkSeqs = [];
+			const { config, preparedCall } = await this.prepareRequest(turn, step, signal);
+			const startsRequestSeries = firstAttempt && decision.startsRequestSeries === true;
+			const commits = this.systemPrompt.project(renderedPrompt, {
+				inHistory: preparedCall?.systemPromptUpdate === "in-history",
+				startsSeries: startsRequestSeries || this.requestSurfaceGeneration !== this.session.surface.replaceGeneration || this.toolsChanged(assembly.tools)
+			});
+			for (const { message, intent } of commits) this.session.append("system/message", {
+				turn,
+				step,
+				message
+			}, intent);
+			if (firstAttempt) for (const message of decision.messages) this.session.append("user/message", message, { surfaceOp: "append" });
+			firstAttempt = false;
+			const request = this.buildRequest(config, preparedCall, assembly.tools, startsRequestSeries, signal);
+			const live = new AssistantStreamAttempt(this.session.id, ++this.assistantAttemptCounter, () => ++this.assistantStreamRevision, turn, step, (frame) => {
+				this.dispatch.emit("agent/assistant-stream", { frame });
+			});
+			let started = false;
 			try {
 				const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request);
 				signal.throwIfAborted();
+				live.start();
+				started = true;
 				for await (const chunk of stream) {
 					signal.throwIfAborted();
-					chunkSeqs.push(this.session.append("assistant/chunk", {
-						turn,
-						step,
-						chunk
-					}).seq);
-					assembler.push(chunk);
+					live.push(chunk);
 				}
 				signal.throwIfAborted();
 			} catch (error) {
-				if (signal.aborted) {
-					const content = assembler.interruptedBlocks();
-					if (content.length > 0) this.session.append("assistant/message", {
+				if (!started) throw error;
+				try {
+					if (signal.aborted) {
+						const content = live.interruptedBlocks();
+						if (content.length > 0) live.settle("assistant/message", () => this.session.append("assistant/message", {
+							turn,
+							step,
+							message: createAssistantMessage({
+								content,
+								source: {
+									provider: request.provider,
+									model: request.model,
+									...live.replayState === void 0 ? {} : { replayState: live.replayState }
+								}
+							}),
+							interrupted: true,
+							...live.usage === void 0 ? {} : { usage: live.usage },
+							stream: live.stream
+						}, { surfaceOp: "append" }).seq);
+						else live.settle("assistant/attempt", () => this.session.append("assistant/attempt", {
+							turn,
+							step,
+							stream: live.stream
+						}).seq);
+					} else live.settle("assistant/attempt", () => this.session.append("assistant/attempt", {
 						turn,
 						step,
-						message: createAssistantMessage({
-							content,
-							source: {
-								provider: request.provider,
-								model: request.model
-							}
-						}),
-						interrupted: true,
-						...assembler.usage === void 0 ? {} : { usage: assembler.usage }
-					}, {
-						surfaceOp: "append",
-						sourceEventSeqs: chunkSeqs
-					});
+						stream: live.stream
+					}).seq);
+				} catch (settlementError) {
+					throw new AggregateError([error, settlementError], "Assistant stream failed and its durable settlement was rejected", { cause: error });
 				}
 				throw error;
 			}
-			const finish = assembler.finish;
-			if (finish.kind === "error" || finish.kind === "aborted") {
-				const action = await this.dispatch.waterfall("agent/request-error", {
+			try {
+				const finish = live.finish;
+				if (finish.kind === "error" || finish.kind === "aborted") {
+					live.settle("assistant/attempt", () => this.session.append("assistant/attempt", {
+						turn,
+						step,
+						stream: live.stream
+					}).seq);
+					const action = await this.dispatch.waterfall("agent/request-error", {
+						turn,
+						step,
+						provider: request.provider,
+						failure: finish.failure,
+						retryPolicy: preparedCall?.retryPolicy,
+						signal
+					}, () => Promise.resolve(void 0));
+					signal.throwIfAborted();
+					if (action?.kind !== "retry") throw new LlmError(finish.failure.message, finish.failure.code, finish.failure);
+					continue;
+				}
+				const message = createAssistantMessage({
+					content: live.blocks(),
+					source: {
+						provider: request.provider,
+						model: request.model,
+						...live.replayState !== void 0 ? { replayState: live.replayState } : {}
+					}
+				});
+				live.settle("assistant/message", () => this.session.append("assistant/message", {
 					turn,
 					step,
-					provider: request.provider,
-					failure: finish.failure,
-					retryPolicy: preparedCall?.retryPolicy,
-					signal
-				}, () => Promise.resolve(void 0));
-				signal.throwIfAborted();
-				if (action?.kind !== "retry") throw new LlmError(finish.failure.message, finish.failure.code, finish.failure);
-				continue;
+					message,
+					...live.usage === void 0 ? {} : { usage: live.usage },
+					stream: live.stream
+				}, { surfaceOp: "append" }).seq);
+				if (finish.kind === "max-tokens") return { kind: "max-tokens" };
+				const toolCalls = message.content.filter((block) => block.type === "tool-call");
+				if (toolCalls.length === 0) return { kind: "completed" };
+				const { concluded } = await executeToolCalls(this.loopCtx, turn, step, toolCalls, signal, (context) => this.inbox.splice("next-step", this.inbox.nextStep.length, 0, [context]));
+				return concluded ? { kind: "completed" } : null;
+			} catch (error) {
+				if (!live.ended) live.abandon();
+				throw error;
 			}
-			const message = createAssistantMessage({
-				content: assembler.blocks(),
-				source: {
-					provider: request.provider,
-					model: request.model,
-					...assembler.replayState !== void 0 ? { replayState: assembler.replayState } : {}
-				}
-			});
-			this.session.append("assistant/message", {
-				turn,
-				step,
-				message,
-				...assembler.usage === void 0 ? {} : { usage: assembler.usage }
-			}, {
-				surfaceOp: "append",
-				sourceEventSeqs: chunkSeqs
-			});
-			if (finish.kind === "max-tokens") return { kind: "max-tokens" };
-			const toolCalls = message.content.filter((block) => block.type === "tool-call");
-			if (toolCalls.length === 0) return { kind: "completed" };
-			const { concluded } = await executeToolCalls(this.loopCtx, turn, step, toolCalls, signal, (context) => this.inbox.splice("next-step", this.inbox.nextStep.length, 0, [context]));
-			return concluded ? { kind: "completed" } : null;
 		}
 	}
-	/**
-	* Compose one frozen request and bind it to the adapter registration that
-	* resolved its exact-model defaults.
-	*/
-	async buildRequest(turn, step, tools, system, boundaryMessages, signal) {
+	/** Resolve request config and bind its adapter before admitting model-visible input. */
+	async prepareRequest(turn, step, signal) {
 		const { session } = this;
 		const persistedHeader = session.requestHeader();
 		const persistedConfig = persistedHeader?.config;
@@ -713,7 +1147,8 @@ var ReactLoopAgent = class {
 			provider: this.options.provider ?? "",
 			model: this.options.model ?? ""
 		};
-		const reasoningEffort = persistedConfig?.provider === route.provider && persistedConfig.model === route.model && persistedHeader?.adapterDefaults?.reasoningEffort !== true ? persistedConfig.reasoningEffort : void 0;
+		const persistedReasoningEffort = persistedConfig?.provider === route.provider && persistedConfig.model === route.model && persistedHeader?.adapterDefaults?.reasoningEffort !== true ? persistedConfig.reasoningEffort : void 0;
+		const reasoningEffort = this.options.reasoningEffort ?? persistedReasoningEffort;
 		const maxTokens = this.options.maxTokens;
 		const seedConfig = deepFreeze(structuredClone(this.requestHeaderLogged ? requestProposal(persistedHeader) : {
 			...route,
@@ -737,13 +1172,22 @@ var ReactLoopAgent = class {
 			config = proposedConfig;
 		}
 		signal.throwIfAborted();
+		return {
+			config,
+			...preparedCall === void 0 ? {} : { preparedCall }
+		};
+	}
+	/** Log the resolved envelope and derive a frozen request from the admitted surface. */
+	buildRequest(config, preparedCall, tools, startsRequestSeries, signal) {
+		const { session } = this;
+		const surfaceGeneration = session.surface.replaceGeneration;
 		const header = canonicalHeader({
 			config,
 			...preparedCall === void 0 ? {} : { adapterDefaults: preparedCall.adapterDefaults },
-			...system ? { system } : {},
 			...tools.length > 0 ? { tools } : {}
 		});
 		const baseline = this.session.requestHeader();
+		const startsSeries = startsRequestSeries || this.requestSurfaceGeneration !== surfaceGeneration;
 		if (!this.requestHeaderLogged) {
 			this.session.append("request/header", {
 				header,
@@ -752,28 +1196,40 @@ var ReactLoopAgent = class {
 			this.requestHeaderLogged = true;
 		} else if (baseline === void 0 || !headerEquals(baseline, header)) this.session.append("request/header", {
 			header,
-			reason: "change"
+			reason: "change",
+			...startsSeries ? { startsSeries: true } : {}
 		});
+		else if (startsSeries) this.session.append("request/header", {
+			header,
+			reason: "series"
+		});
+		this.requestSurfaceGeneration = surfaceGeneration;
 		const contextWindow = preparedCall?.context?.contextWindow;
+		const systemPromptUpdate = preparedCall?.systemPromptUpdate;
 		const requestContext = {
 			provider: config.provider,
 			model: config.model,
-			...contextWindow === void 0 ? {} : { contextWindow }
+			...contextWindow === void 0 ? {} : { contextWindow },
+			...systemPromptUpdate === void 0 ? {} : { systemPromptUpdate }
 		};
 		const previousContext = session.requestContext();
-		if (previousContext?.provider !== requestContext.provider || previousContext.model !== requestContext.model || previousContext.contextWindow !== requestContext.contextWindow) session.append("request/context", requestContext);
+		if (previousContext?.provider !== requestContext.provider || previousContext.model !== requestContext.model || previousContext.contextWindow !== requestContext.contextWindow || previousContext.systemPromptUpdate !== requestContext.systemPromptUpdate) session.append("request/context", requestContext);
 		signal.throwIfAborted();
-		return {
-			request: markAgentLoopRequest(deepFreeze({
-				...header.config,
-				messages: stripDelegatedImages(boundaryMessages),
-				...header.system !== void 0 ? { system: header.system } : {},
-				...header.tools !== void 0 ? { tools: header.tools } : {},
-				sessionId: this.session.id,
-				signal
-			})),
-			...preparedCall === void 0 ? {} : { preparedCall }
-		};
+		deepFreeze(header);
+		const boundaryMessages = session.deriveMessages();
+		for (const message of boundaryMessages) {
+			if (this.frozenMessages.has(message)) continue;
+			deepFreeze(message);
+			this.frozenMessages.add(message);
+		}
+		Object.freeze(boundaryMessages);
+		return markAgentLoopRequest(Object.freeze({
+			...header.config,
+			messages: stripDelegatedImages(boundaryMessages),
+			...header.tools !== void 0 ? { tools: header.tools } : {},
+			sessionId: this.session.id,
+			signal
+		}));
 	}
 };
 //#endregion
@@ -855,6 +1311,55 @@ const INACTIVE_STATES = new Set([
 	4,
 	3
 ]);
+/** Host projection of agent turn and step boundaries. */
+const turnBoundaryProjectionDefinition = {
+	key: "turnBoundary",
+	stateVersion: 2,
+	stateSchema: z$1.object({
+		openTurnStartSeq: z$1.number().int().nonnegative().transform(SessionSeq).nullable(),
+		lastStepStartSeq: z$1.number().int().nonnegative().transform(SessionSeq).nullable(),
+		lastStepBoundary: z$1.object({
+			kind: z$1.union([z$1.literal("start"), z$1.literal("end")]),
+			seq: z$1.number().int().nonnegative().transform(SessionSeq)
+		}).nullable(),
+		lastTurn: z$1.number().int().nonnegative()
+	}),
+	init: () => ({
+		openTurnStartSeq: null,
+		lastStepStartSeq: null,
+		lastStepBoundary: null,
+		lastTurn: 0
+	}),
+	apply: (state, event) => {
+		switch (event.type) {
+			case "turn/start": return {
+				...state,
+				openTurnStartSeq: event.seq,
+				lastTurn: event.data.turn
+			};
+			case "turn/end": return {
+				...state,
+				openTurnStartSeq: null
+			};
+			case "step/start": return {
+				...state,
+				lastStepStartSeq: event.seq,
+				lastStepBoundary: {
+					kind: "start",
+					seq: event.seq
+				}
+			};
+			case "step/end": return {
+				...state,
+				lastStepBoundary: {
+					kind: "end",
+					seq: event.seq
+				}
+			};
+			default: return state;
+		}
+	}
+};
 /** Factory-level ownership: live agent teardowns plus config startup work. */
 var FactoryOwnership = class {
 	fiber;
@@ -970,7 +1475,7 @@ function applyLauncherIdentities(agents, identities) {
 	});
 }
 /** Settings namespace carrying the tool-call parallelism a user owns. */
-const AGENT_LOOP_SETTINGS_NAMESPACE = settingsNamespace("agent-loop");
+const AGENT_LOOP_SETTINGS_NAMESPACE = "agent-loop";
 /** Schema of the agent-loop settings section. */
 const AGENT_LOOP_SETTINGS_SCHEMA = z.object({ maxParallelToolCalls: z.number().step(1).min(1).default(10) });
 /** Reject self-contained identity conflicts before any configured agent starts. */
@@ -993,7 +1498,8 @@ var AgentLoop = class extends Service {
 		"sessions",
 		"llm",
 		"tools",
-		"systemPrompt"
+		"systemPrompt",
+		"sessionProjections"
 	];
 	/** Runtime schema for declarative agents. */
 	static Config = z.object({
@@ -1003,6 +1509,7 @@ var AgentLoop = class extends Service {
 			sessionId: z.string().min(1),
 			provider: z.string(),
 			model: z.string(),
+			reasoningEffort: z.string().min(1),
 			maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER),
 			cwd: z.string(),
 			resumeSessionId: z.string()
@@ -1024,14 +1531,17 @@ var AgentLoop = class extends Service {
 				return source().maxParallelToolCalls;
 			}
 		};
-		installSettingsSection(ctx, AGENT_LOOP_SETTINGS_NAMESPACE, AGENT_LOOP_SETTINGS_SCHEMA, entry, {
-			validate: (value) => void resolveMaxParallelToolCalls(value.maxParallelToolCalls),
-			setSource: (current) => {
-				source = current;
-			},
-			onChange: () => {}
+		ctx.inject(["settings"], (settingsCtx) => {
+			settingsCtx.settings.installSection(ctx, AGENT_LOOP_SETTINGS_NAMESPACE, AGENT_LOOP_SETTINGS_SCHEMA, entry, {
+				validate: (value) => void resolveMaxParallelToolCalls(value.maxParallelToolCalls),
+				setSource: (current) => {
+					source = current;
+				},
+				onChange: () => {}
+			});
 		});
 		validateConfiguredAgents(this.config.agents);
+		ctx.sessionProjections.register(turnBoundaryProjectionDefinition);
 		this.ownership = new FactoryOwnership(ctx.fiber);
 		this.runtime = { ctx };
 		ctx.effect(() => () => this.ownership.dispose(), "agentLoop.transactions()");
@@ -1042,10 +1552,14 @@ var AgentLoop = class extends Service {
 		for (const { id, sessionId, cwd, resumeSessionId, ...options } of this.config.agents) {
 			const meta = cwd === void 0 ? {} : { cwd };
 			if (resumeSessionId === void 0 || resumeSessionId === "") {
-				const configuredId = sessionId ?? SessionId(`${id}-session-${randomUUID()}`);
+				const configuredId = sessionId ?? brandString(`${id}-session-${randomUUID()}`);
 				const persistence = sessionId === void 0 ? void 0 : ctx.get("sessionPersistence");
-				if (persistence === void 0) this.create(configuredId, options, meta);
-				else {
+				if (persistence === void 0) {
+					const startup = this.create(configuredId, options, meta).then(() => void 0, (error) => {
+						this.reportConfiguredStartupFailure(id, "restore", configuredId, error);
+					});
+					this.ownership.trackStartup(startup);
+				} else {
 					const startup = this.restoreOrCreateConfigured(ctx, persistence, configuredId, options, meta).catch((error) => {
 						this.reportConfiguredStartupFailure(id, "restore", configuredId, error);
 					});
@@ -1094,9 +1608,9 @@ var AgentLoop = class extends Service {
 			return;
 		} catch (error) {
 			if (!this.ownership.isActive()) return;
-			if ((await persistence.list()).some((header) => header.id === sessionId)) throw error;
+			if (!(error instanceof SessionPersistenceNotFoundError)) throw error;
 		}
-		this.create(sessionId, agentOptions, meta);
+		await this.create(sessionId, agentOptions, meta);
 	}
 	/** Wait for a draining same-id lifecycle to finish registry teardown. */
 	async waitForDrainingConfiguredIdentity(ownerCtx, sessionId) {
@@ -1123,7 +1637,7 @@ var AgentLoop = class extends Service {
 	* BEFORE publication, so a mid-setup unload rolls everything back; `signal`
 	* fuses caller cancellation with lifecycle teardown for setup awaits.
 	*/
-	prepare(ownerCtx, id, options, session, callerSignal) {
+	prepare(ownerCtx, id, options, session, callerSignal, handle, parentAgent) {
 		assertAgentOptions(options);
 		ownerCtx.fiber.assertActive();
 		/* v8 ignore next -- unreachable backstop, see above */
@@ -1148,32 +1662,49 @@ var AgentLoop = class extends Service {
 			abort.abort(/* @__PURE__ */ new Error(`agent "${id}" lifecycle disposed`));
 			callerSignal?.removeEventListener("abort", onCallerAbort);
 			this.ownership.signal.removeEventListener("abort", onFactoryTeardown);
+			const failures = [];
 			try {
+				/* v8 ignore next -- Cordis effect teardown waits for synchronous setup before observing the machine slot. */
 				if (machine === void 0) await machineReady.promise;
+				/* v8 ignore next -- setup failure untracks this disposer before resolving without a machine. */
 				if (machine !== void 0) {
 					machine.cancel({ kind: "disposed" });
 					await machine.whenIdle();
 					await machine.scope.dispose();
 				}
-			} finally {
-				try {
-					detachAgent?.();
-					detachSession?.();
-				} finally {
-					untrack();
-					if (!ownerTriggered) await unfollowOwner();
-				}
+			} catch (error) {
+				failures.push(error);
 			}
+			try {
+				await handle?.close();
+			} catch (error) {
+				failures.push(error);
+			}
+			try {
+				detachAgent?.();
+				detachSession?.();
+			} finally {
+				untrack();
+				if (!ownerTriggered) await unfollowOwner();
+			}
+			if (failures.length === 1) throw failures[0];
+			if (failures.length > 1) throw new AggregateError(failures, `agent "${id}" disposal failed`);
 		})();
 		const untrack = this.ownership.track(dispose);
 		let unfollowOwner;
 		try {
-			unfollowOwner = ownerCtx.effect(() => () => {
-				if (disposing !== void 0) return;
-				abort.abort(/* @__PURE__ */ new Error(`agent "${id}" setup aborted: owner disposed during setup`));
-				return dispose(true);
+			unfollowOwner = ownerCtx.effect(function* () {
+				machine = new ReactLoopAgent(loopCtx, id, options, session);
+				machineReady.resolve();
+				yield machine.scope.rawDispose;
+				yield () => {
+					if (disposing !== void 0) return;
+					abort.abort(/* @__PURE__ */ new Error(`agent "${id}" setup aborted: owner disposed during setup`));
+					return dispose(true);
+				};
 			}, `agentLoop.lifecycle(${id})`);
 		} catch (error) {
+			machineReady.resolve();
 			untrack();
 			callerSignal?.removeEventListener("abort", onCallerAbort);
 			this.ownership.signal.removeEventListener("abort", onFactoryTeardown);
@@ -1186,8 +1717,9 @@ var AgentLoop = class extends Service {
 			throw abort.signal.reason instanceof Error ? abort.signal.reason : new Error(String(abort.signal.reason));
 		};
 		try {
-			const agent = machine = new ReactLoopAgent(loopCtx, id, options, session);
-			machineReady.resolve();
+			/* v8 ignore next -- a synchronous effect exhausts the generator before returning */
+			if (machine === void 0) throw new Error(`agent "${id}" lifecycle did not construct its driver`);
+			const agent = machine;
 			assertLive();
 			return {
 				agent,
@@ -1195,7 +1727,7 @@ var AgentLoop = class extends Service {
 				publish: (source) => {
 					assertLive();
 					detachSession = agent.ctx.sessions.enter(session);
-					detachAgent = loopCtx.agents.enter(agent, ownerCtx.agent);
+					detachAgent = loopCtx.agents.enter(agent, parentAgent);
 					agent.ctx.sessions.announce(session);
 					assertLive();
 					loopCtx.agents.announce(agent);
@@ -1211,20 +1743,21 @@ var AgentLoop = class extends Service {
 			};
 		} catch (error) {
 			machineReady.resolve();
-			dispose();
+			dispose().catch(() => {});
 			throw error;
 		}
 	}
 	/**
 	* Create an agent and session under one caller-supplied identity, owned by
 	* the accessing fiber. Constructor-driven config calls mint a fresh combined
-	* id before entering this boundary.
+	* id before entering this boundary. When a persistence backend is mounted,
+	* the session's durable identity and any seed are stored before publication.
 	* @param id - shared agent/session identity.
 	* @param options - concrete loop options.
 	* @param meta - optional fresh-session workspace metadata.
 	* @returns the published running agent.
 	*/
-	create(id, options = {}, meta = {}) {
+	async create(id, options = {}, meta = {}) {
 		const env_1 = {
 			stack: [],
 			error: void 0,
@@ -1232,11 +1765,19 @@ var AgentLoop = class extends Service {
 		};
 		try {
 			const preparation = __addDisposableResource(env_1, SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, { meta })), false);
-			const prepared = this.prepare(this.ctx, id, options, preparation.session);
+			const stored = await this.createStoredSession(preparation.session);
+			let prepared;
 			try {
+				prepared = this.prepare(this.ctx, id, options, preparation.session, void 0, stored?.handle);
+			} catch (error) {
+				await stored?.handle.close().catch(() => {});
+				throw error;
+			}
+			try {
+				await this.appendUnstoredSuffix(stored, preparation.session);
 				return prepared.publish("startup").agent;
 			} catch (error) {
-				prepared.dispose();
+				prepared.dispose().catch(() => {});
 				throw error;
 			}
 		} catch (e_1) {
@@ -1247,22 +1788,71 @@ var AgentLoop = class extends Service {
 		}
 	}
 	/**
+	* Take a fresh session's write ownership when persistence is mounted.
+	* Nothing is appended here: the constructor seed (which never re-emits
+	* through `session/event`) is stored by `appendUnstoredSuffix` at the
+	* publication commit point, so a failed or cancelled validation or setup
+	* closes an unmaterialized handle and leaves no stored residue — the same
+	* id can be created again.
+	* @param session - the unpublished session to store.
+	* @param signal - optional cancellation forwarded to the backend create.
+	* @returns the owned handle and stored cursor, or `undefined` without a backend.
+	*/
+	async createStoredSession(session, signal) {
+		const persistence = this.runtime.ctx.get("sessionPersistence");
+		if (persistence === void 0) return void 0;
+		return {
+			handle: await persistence.create(session.header, {
+				inheritedEventCount: session.inheritedEventCount,
+				...signal === void 0 ? {} : { signal }
+			}),
+			storedCount: 0
+		};
+	}
+	/**
+	* Durably store the session events appended since the last stored cursor.
+	* Pre-publication appends (constructor seed markers, setup-window events
+	* such as delegation policy records) never re-emit through `session/event`,
+	* so publication must flush them through the handle before live events
+	* start routing into it.
+	* @param stored - the session's owned handle and stored cursor, if any.
+	* @param session - the unpublished session whose suffix is stored.
+	*/
+	async appendUnstoredSuffix(stored, session) {
+		if (stored === void 0) return;
+		const suffix = session.snapshotEvents(SessionLogOffset(stored.storedCount));
+		if (suffix.length > 0) await stored.handle.append(suffix);
+		stored.storedCount += suffix.length;
+	}
+	/**
 	* Create an owned agent on a caller-supplied session id.
 	* @param ownerCtx - caller context that structurally owns the lifecycle.
-	* @param options - identities, session seed/metadata, loop options, setup, and cancellation.
+	* @param options - identities, optional live parent, session seed/metadata, loop options, setup, and cancellation.
 	* @returns the published handle.
 	*/
 	async createAgent(ownerCtx, options) {
 		const preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(options.sessionId, {
 			...options.seed === void 0 ? {} : { seed: options.seed },
-			...options.meta === void 0 ? {} : { meta: options.meta }
+			...options.meta === void 0 ? {} : { meta: options.meta },
+			...options.inheritedEventCount === void 0 ? {} : { inheritedEventCount: options.inheritedEventCount }
 		}));
-		const published = this.setupAndPublish(ownerCtx, options.sessionId, preparation, options.agentOptions ?? {}, options.setup, options.signal, "startup");
+		const published = (async () => {
+			let stored;
+			try {
+				stored = options.signal === void 0 ? await this.createStoredSession(preparation.session) : await raceAbortCall(() => this.createStoredSession(preparation.session, options.signal), options.signal, options.sessionId, (abandoned) => {
+					abandoned?.handle.close().catch(() => {});
+				});
+			} catch (error) {
+				preparation[Symbol.dispose]();
+				throw error;
+			}
+			return this.setupAndPublish(ownerCtx, options.sessionId, preparation, options.agentOptions ?? {}, options.setup, options.signal, "startup", stored, options.parentAgent);
+		})();
 		this.ownership.trackWrapper(published);
 		return published;
 	}
 	/** Prepare one Agent around an acquired Session, run setup, and publish it. */
-	async setupAndPublish(ownerCtx, id, preparation, agentOptions, setup, signal, source) {
+	async setupAndPublish(ownerCtx, id, preparation, agentOptions, setup, signal, source, stored, parentAgent) {
 		const env_2 = {
 			stack: [],
 			error: void 0,
@@ -1270,12 +1860,19 @@ var AgentLoop = class extends Service {
 		};
 		try {
 			const session = __addDisposableResource(env_2, preparation, false).session;
-			const prepared = this.prepare(ownerCtx, id, agentOptions, session, signal);
+			let prepared;
 			try {
-				(await raceAbort(setup?.(prepared.agent.ctx), prepared.signal, id))?.commit();
+				prepared = this.prepare(ownerCtx, id, agentOptions, session, signal, stored?.handle, parentAgent);
+			} catch (error) {
+				await stored?.handle.close().catch(() => {});
+				throw error;
+			}
+			try {
+				(await raceAbort(setup?.(prepared.agent.ctx, prepared.agent), prepared.signal, id))?.commit();
+				await this.appendUnstoredSuffix(stored, session);
 				return prepared.publish(source);
 			} catch (error) {
-				await prepared.dispose();
+				await prepared.dispose().catch(() => {});
 				throw error;
 			}
 		} catch (e_2) {
@@ -1288,7 +1885,7 @@ var AgentLoop = class extends Service {
 	/**
 	* Resume an owned agent from the configured persistence service.
 	* @param ownerCtx - caller context that owns load, setup, and the live lifecycle.
-	* @param options - persisted identity, loop options, setup, and cancellation.
+	* @param options - persisted identity, optional live parent, loop options, setup, and cancellation.
 	* @returns the published handle.
 	*/
 	async resume(ownerCtx, options) {
@@ -1309,20 +1906,41 @@ var AgentLoop = class extends Service {
 				ownerAbort.signal,
 				this.ownership.signal
 			]);
+			let handle;
+			let stored;
 			let preparation;
 			try {
 				try {
-					preparation = await raceAbortCall(() => persistence.prepare(id, fused), fused, id, (abandoned) => {
-						abandoned[Symbol.dispose]();
+					handle = await raceAbortCall(() => persistence.open(id, "write", { signal: fused }), fused, id, (abandoned) => {
+						abandoned.close();
 					});
+					const coldRead = await handle.read(0, void 0, { signal: fused });
+					fused.throwIfAborted();
+					const persisted = coldRead.events;
+					const closers = interruptedTurnClosers(persisted);
+					if (closers.length > 0) await handle.append(closers);
+					preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, {
+						seed: [...persisted, ...closers],
+						meta: structuredClone(handle.header),
+						inheritedEventCount: handle.inheritedEventCount,
+						eventState: coldRead.eventState
+					}));
+					stored = {
+						handle,
+						storedCount: persisted.length + closers.length
+					};
+					await this.appendUnstoredSuffix(stored, preparation.session);
 				} finally {
 					await unfollowOwner();
 				}
 				ownerCtx.fiber.assertActive();
 				if (!this.ownership.isActive()) throw new Error("agent loop is not active");
-				return await this.setupAndPublish(ownerCtx, id, preparation, options.agentOptions ?? {}, options.setup, options.signal, "resume");
+				const owned = stored;
+				handle = void 0;
+				return await this.setupAndPublish(ownerCtx, id, preparation, options.agentOptions ?? {}, options.setup, options.signal, "resume", owned, options.parentAgent);
 			} finally {
 				preparation?.[Symbol.dispose]();
+				await handle?.close().catch(() => {});
 			}
 		})();
 		this.ownership.trackWrapper(published);
@@ -1330,4 +1948,4 @@ var AgentLoop = class extends Service {
 	}
 };
 //#endregion
-export { AGENT_LOOP_SETTINGS_NAMESPACE, AGENT_LOOP_SETTINGS_SCHEMA, AgentLoop, AgentLoop as default, CONFIGURED_AGENT_IDENTITIES_KEY, DEFAULT_MAX_PARALLEL_TOOL_CALLS };
+export { AGENT_LOOP_SETTINGS_NAMESPACE, AGENT_LOOP_SETTINGS_SCHEMA, AgentLoop, AgentLoop as default, CONFIGURED_AGENT_IDENTITIES_KEY, DEFAULT_MAX_PARALLEL_TOOL_CALLS, turnBoundaryProjectionDefinition };
