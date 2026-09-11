@@ -216,6 +216,23 @@ V4.1-Flash 的原生读图会被降级成纯文本路由 —— 恰恰是这次�
 
 文件夹是唯一例外（原生实测无目录选择入口），走草稿文本标题。
 
+## 冒烟验证：已通过（并修掉一个启动期竞态）
+
+用隔离 DSH_HOME 以 `dsh --profile web` 直接起 0.1.5 运行时逐步定位：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `--dump-config` 组合 profile | ✅ 全部插件行解析成功 |
+| 启动，**不带**桌面补丁 | ✅ 监听成功、HTTP 401（要 token，正常） |
+| 启动，**带**桌面补丁 | ❌ `dsh-client-connection: fiber state 5`，整树不激活 |
+| 定位 | 插件的 connection trust heal 在 `loader.await()` 后**立即** `entry.update()`，会**重启 connection fiber**；0.1.5 在启动序列里新增了 `assertEntriesActivated`（断言每个条目 ACTIVE）。两者构成竞态：重启窗口内条目非激活，断言即失败。 |
+| 修复 | `installConnectionTrustHeal` 去掉「settle 后立刻 tick」，只保留 30s 间隔。heal 本身是为网络切换后的信任名单修复而存在，晚一个周期无损失。 |
+| 复测 | ✅ 监听成功、HTTP 401、零错误行 |
+| 带 token 取首页 | ✅ HTTP 200 / 40,632 字节 / `<title>DeepSeek Harness</title>` / `__DSH_BOOT__` 就位 / **页面中 `dsh-desktop` 出现 6 次**（插件客户端半边已登记） |
+
+这个竞态在任何 `trustedHosts` 尚未写全的机器上都会让整个 profile 启不来——
+包括**第一次在新机器上安装**。所以是必须修的，不是测试环境的偶然。
+
 ## 覆盖层清单（已收敛为 4 个，构建链全绿）
 
 | 补丁 | 目标 | 与上游差异 |

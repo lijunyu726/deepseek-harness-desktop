@@ -1891,7 +1891,6 @@ function ensureVisionCommand(ctx) {
  * on a 30s interval (network changes while the app stays open).
  */
 function installConnectionTrustHeal(ctx) {
-  const settle = typeof ctx.loader?.await === 'function' ? ctx.loader.await() : undefined
   const tick = () => {
     try {
       refreshConnectionTrust(ctx)
@@ -1899,7 +1898,13 @@ function installConnectionTrustHeal(ctx) {
       /* interval keeps running */
     }
   }
-  Promise.resolve(settle).then(tick).catch(() => {})
+  // Deliberately no immediate tick off `loader.await()`: the heal restarts the
+  // connection fiber (entry.update with a changed config), and 0.1.5's boot
+  // asserts every entry is ACTIVE right after the loader settles. Racing that
+  // assertion leaves client-connection inactive and the whole profile fails to
+  // boot on any host whose trustedHosts is not already complete. One interval
+  // period of delay costs nothing — the heal only matters after the network
+  // actually changes, and the startup snapshot it repairs is taken once.
   ctx.effect(() => {
     const timer = setInterval(tick, 30_000)
     return () => clearInterval(timer)
